@@ -16,6 +16,7 @@ type TokenRepo interface {
 	GetTokens() ([]models.Token, error)
 	GetTokenByIdentificator(models.TokenIdentificator) (models.Token, error)
 	GetTokensBySymbolsAndChainID(symbols []string, chainID uint) ([]models.Token, error)
+	GetTokensByAddressesAndChainID(symbols []string, chainID uint) ([]models.Token, error)
 	GetTokensByChainID(chainID uint) ([]models.Token, error)
 	UpdateTokens(tokens []models.Token) error
 }
@@ -214,6 +215,54 @@ func (r *tokenRepo) GetTokensBySymbolsAndChainID(symbols []string, chainID uint)
 		).
 		From(models.TOKENS_TABLE).
 		Where(sq.Eq{models.TOKEN_SYMBOL: symbols, models.TOKEN_CHAINID: chainID})
+
+	rows, err := query.
+		RunWith(db).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+
+	var tokens = []models.Token{}
+	for rows.Next() {
+		var token models.Token
+		defiUSDPriceStr := ""
+		err := rows.Scan(&token.Name, &token.Symbol, &token.Address, &token.ChainID, &token.LogoURI, &token.Decimals, &defiUSDPriceStr)
+		if err != nil {
+			return nil, err
+		}
+
+		defiUSDPrice := new(big.Float)
+		_, ok := defiUSDPrice.SetString(defiUSDPriceStr)
+		if !ok {
+			return nil, errors.New("unable to parse defi price of token")
+		}
+
+		token.DefiUSDPrice = defiUSDPrice
+		tokens = append(tokens, token)
+	}
+
+	return tokens, nil
+}
+
+func (r *tokenRepo) GetTokensByAddressesAndChainID(addresses []string, chainID uint) ([]models.Token, error) {
+	db, err := r.pgDatabase.GetDB()
+	if err != nil {
+		return nil, err
+	}
+
+	query := psql.
+		Select(
+			models.TOKEN_NAME,
+			models.TOKEN_SYMBOL,
+			models.TOKEN_ADDRESS,
+			models.TOKEN_CHAINID,
+			models.TOKEN_LOGOURI,
+			models.TOKEN_DECIMALS,
+			models.TOKEN_DEFI_USD_PRICE,
+		).
+		From(models.TOKENS_TABLE).
+		Where(sq.Eq{models.TOKEN_ADDRESS: addresses, models.TOKEN_CHAINID: chainID})
 
 	rows, err := query.
 		RunWith(db).

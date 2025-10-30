@@ -1,17 +1,20 @@
 package merger
 
 import (
+	"context"
 	"errors"
+	"math/big"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/alexkalak/go_market_analyze/common/external/rpcclient"
 	"github.com/alexkalak/go_market_analyze/common/external/subgraphs"
 	"github.com/alexkalak/go_market_analyze/common/periphery/pgdatabase"
 	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v3poolsrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/tokenrepo"
 )
 
-var USD_STABLECOIN_SYMBOLS = []string{
-	"USDT",
+var USD_STABLECOIN_ADDRESSES = []string{
+	"0xdac17f958d2ee523a2206206994597c13d831ec7",
 	// "USDC",
 	// "DAI",
 	// "TUSD",
@@ -23,8 +26,8 @@ var USD_STABLECOIN_SYMBOLS = []string{
 
 const defaultAmount0 = 0
 const defaultAmount1 = 0
-const defaultToken0Holding = 0
-const defaultToken1Holding = 0
+const defaultZfo10USDRate = 0
+const defaultNonZfo10USDRate = 0
 const defaultIsDusty = true
 const defaultBlockNumber = 0
 const defaultSqrtPriceX96 = 0
@@ -40,6 +43,7 @@ type MergerDependencies struct {
 	SubgraphClient subgraphs.SubgraphClient
 	V3PoolsDBRepo  v3poolsrepo.V3PoolDBRepo
 	TokenRepo      tokenrepo.TokenRepo
+	RpcClient      rpcclient.RpcClient
 }
 
 func (d *MergerDependencies) validate() error {
@@ -55,6 +59,9 @@ func (d *MergerDependencies) validate() error {
 	if d.TokenRepo == nil {
 		return errors.New("merger dependencies token db repo cannot be nil")
 	}
+	if d.RpcClient == nil {
+		return errors.New("merger dependencies rpc client cannot be nil")
+	}
 
 	return nil
 }
@@ -62,6 +69,9 @@ func (d *MergerDependencies) validate() error {
 type Merger interface {
 	MergeTokens(chainID uint) error
 	MergePools(chainID uint) error
+	MergePoolsData(ctx context.Context, chainID uint, blockNumber *big.Int) error
+	MergePoolsTicks(ctx context.Context, chainID uint, blockNumber *big.Int) error
+	ValidateV3PoolsAndComputeAverageUSDPrice(chainID uint) error
 }
 
 type merger struct {
@@ -69,11 +79,7 @@ type merger struct {
 	subgraphClient subgraphs.SubgraphClient
 	tokenRepo      tokenrepo.TokenRepo
 	v3PoolsDBRepo  v3poolsrepo.V3PoolDBRepo
-	// SubgraphClient *subgraphs.SubgraphClient
-	// TokenRepo      tokenrepo.TokenRepo
-	// V3PoolsRepo    v3poolsrepo.V3PoolDBRepo
-	// V2PairsRepo    v2pairsrepo.V2PairRepo
-	// RpcClient      *rpcinteraction.RpcInteractionClient
+	rpcClient      rpcclient.RpcClient
 }
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
@@ -89,5 +95,6 @@ func NewMerger(dependencies MergerDependencies) (Merger, error) {
 		subgraphClient: dependencies.SubgraphClient,
 		v3PoolsDBRepo:  dependencies.V3PoolsDBRepo,
 		tokenRepo:      dependencies.TokenRepo,
+		rpcClient:      dependencies.RpcClient,
 	}, nil
 }

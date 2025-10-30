@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/alexkalak/go_market_analyze/common/helpers"
 	"github.com/alexkalak/go_market_analyze/common/models"
-	"github.com/alexkalak/go_market_analyze/src/helpers"
 )
 
 var bTen = big.NewInt(10)

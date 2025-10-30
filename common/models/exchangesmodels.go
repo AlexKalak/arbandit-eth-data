@@ -29,6 +29,9 @@ const UNISWAP_V3_POOL_BLOCK_NUMBER = "block_number"
 const UNISWAP_V3_POOL_TOKEN0_HOLDING = "token0_holding"
 const UNISWAP_V3_POOL_TOKEN1_HOLDING = "token1_holding"
 
+const UNISWAP_V3_ZFO_10USD_RATE = "zfo_10usd_rate"
+const UNISWAP_V3_NON_ZFO_10USD_RATE = "non_zfo_10usd_rate"
+
 type UniswapV3Pool struct {
 	Address       string
 	ExchangeName  string
@@ -46,8 +49,8 @@ type UniswapV3Pool struct {
 	IsDusty       bool
 	BlockNumber   int
 
-	Token0Holding *big.Int
-	Token1Holding *big.Int
+	Zfo10USDRate    *big.Float
+	NonZfo10USDRate *big.Float
 }
 
 func (u *UniswapV3Pool) NearTicks() []int {

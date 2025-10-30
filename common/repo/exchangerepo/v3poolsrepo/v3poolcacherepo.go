@@ -30,13 +30,19 @@ type V3PoolCacheRepo interface {
 	ClearPools(chainID uint) error
 }
 
+type V3PoolCacheRepoConfig struct {
+	RedisServer string
+}
+
 type v3poolCacheRepo struct {
 	redisDB *redisdb.RedisDatabase
 	ctx     context.Context
 }
 
-func NewCacheRepo(ctx context.Context) (V3PoolCacheRepo, error) {
-	redisDatabase, err := redisdb.New(redisdb.RedisDatabaseConfig{})
+func NewCacheRepo(ctx context.Context, config V3PoolCacheRepoConfig) (V3PoolCacheRepo, error) {
+	redisDatabase, err := redisdb.New(redisdb.RedisDatabaseConfig{
+		RedisServer: config.RedisServer,
+	})
 	if err != nil {
 		return &v3poolCacheRepo{}, err
 	}

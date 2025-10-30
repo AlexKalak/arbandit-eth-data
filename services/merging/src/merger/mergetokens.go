@@ -1,12 +1,26 @@
 package merger
 
 import (
-	"context"
 	"database/sql"
+	_ "embed"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/alexkalak/go_market_analyze/common/models"
 )
+
+//go:embed mergeassets/tokens.uniswap.org.json
+var uniswapTokens string
+
+type tokenFromUniswapOrg struct {
+	Name     string `json:"name"`
+	Address  string `json:"address"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+	ChainID  int    `json:"chainId"`
+	LogoURI  string `json:"logoURI"`
+}
 
 func (m *merger) MergeTokens(chainID uint) error {
 	db, err := m.database.GetDB()
@@ -14,9 +28,25 @@ func (m *merger) MergeTokens(chainID uint) error {
 		return err
 	}
 
-	tokens, err := m.subgraphClient.GetTokensForV3Contract(context.Background(), chainID)
+	tokensRaw := []tokenFromUniswapOrg{}
+	err = json.NewDecoder(strings.NewReader(uniswapTokens)).Decode(&tokensRaw)
 	if err != nil {
 		return err
+	}
+
+	tokens := make([]models.Token, 0, len(tokensRaw))
+	for _, rawToken := range tokensRaw {
+		if rawToken.ChainID != int(chainID) {
+			continue
+		}
+		tokens = append(tokens, models.Token{
+			ChainID:  chainID,
+			Address:  rawToken.Address,
+			Name:     rawToken.Name,
+			Symbol:   rawToken.Symbol,
+			Decimals: rawToken.Decimals,
+			LogoURI:  rawToken.LogoURI,
+		})
 	}
 
 	query := psql.Insert(models.TOKENS_TABLE).Columns(
@@ -38,6 +68,7 @@ func (m *merger) MergeTokens(chainID uint) error {
 			continue
 		}
 		tokensMap[token.Address] = new(any)
+		token.Address = strings.ToLower(token.Address)
 
 		query = query.Values(
 			token.Address,

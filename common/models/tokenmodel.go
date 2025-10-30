@@ -29,6 +29,12 @@ type Token struct {
 	HasLiquidity bool
 }
 
+func (t *Token) GetRealAmount(amount *big.Int) *big.Float {
+	exp := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(t.Decimals)), nil)
+	return new(big.Float).Quo(new(big.Float).SetInt(amount), new(big.Float).SetInt(exp))
+
+}
+
 func (t *Token) GetIdentificator() TokenIdentificator {
 	return TokenIdentificator{
 		Address: t.Address,

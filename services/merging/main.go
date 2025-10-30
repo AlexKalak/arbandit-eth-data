@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/alexkalak/go_market_analyze/common/external/rpcclient"
 	"github.com/alexkalak/go_market_analyze/common/external/subgraphs"
 	"github.com/alexkalak/go_market_analyze/common/helpers/envhelper"
 	"github.com/alexkalak/go_market_analyze/common/periphery/pgdatabase"
@@ -48,18 +49,30 @@ func main() {
 		panic(err)
 	}
 
+	rpcClient, err := rpcclient.NewRpcClient(rpcclient.RpcClientConfig{
+		EthMainnetWs:   env.ETH_MAINNET_RPC_WS,
+		EthMainnetHttp: env.ETH_MAINNET_RPC_HTTP,
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	mergerDependencies := merger.MergerDependencies{
 		Database:       pgDB,
 		SubgraphClient: subgraphClient,
 		TokenRepo:      tokenRepo,
 		V3PoolsDBRepo:  v3PoolsRepo,
+		RpcClient:      rpcClient,
 	}
+
 	merger, err := merger.NewMerger(mergerDependencies)
 	if err != nil {
 		panic(err)
 	}
 	var chainID uint = 1
-	err = merger.MergePools(chainID)
+	// blockNumber := big.NewInt(23678329)
+
+	err = merger.ValidateV3PoolsAndComputeAverageUSDPrice(chainID)
 	if err != nil {
 		panic(err)
 	}
