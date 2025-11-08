@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"math/big"
 
 	"github.com/alexkalak/go_market_analyze/common/helpers/envhelper"
 	"github.com/alexkalak/go_market_analyze/common/periphery/pgdatabase"
@@ -18,8 +17,6 @@ func main() {
 	}
 
 	var chainID uint = 1
-	blockNumber := big.NewInt(23704182)
-
 	pgConf := pgdatabase.PgDatabaseConfig{
 		Host:     env.POSTGRES_HOST,
 		Port:     env.POSTGRES_PORT,
@@ -67,5 +64,5 @@ func main() {
 		panic(err)
 	}
 
-	eventCollectorService.StartFromBlockV3(context.Background(), poolAddresses, blockNumber)
+	eventCollectorService.StartFromBlockV3(context.Background(), poolAddresses)
 }

@@ -98,7 +98,7 @@ func ValidateV2PairsAndGetAverageUSDPriceForTokens(pairs []models.UniswapV2Pair,
 
 	tokenPricesMap := map[string]*big.Float{}
 	for k, v := range tokensMap {
-		tokenPricesMap[k] = v.Token.DefiUSDPrice
+		tokenPricesMap[k] = v.Token.USDPrice
 	}
 
 	return tokenPricesMap, notDustyPairs, nil
@@ -192,7 +192,7 @@ func checkPairForDefinedTokens(tokenList *tokenlist.TokenList, tokensMap map[str
 		pair.IsDusty = false
 
 		if token, ok := tokensMap[anotherToken.Address]; ok {
-			fmt.Printf("adding  amount: %s -> %s, %s -> %s \n", token.getTotalUSDAmountReal().String(), token.Token.DefiUSDPrice.String(), amountOfAnotherTokenInUSD.String(), anotherTokenPriceInUSD.String())
+			fmt.Printf("adding  amount: %s -> %s, %s -> %s \n", token.getTotalUSDAmountReal().String(), token.Token.USDPrice.String(), amountOfAnotherTokenInUSD.String(), anotherTokenPriceInUSD.String())
 			token.USDPriceAmountToPrice = append(
 				token.USDPriceAmountToPrice,
 				usdAmountProvidedToPrice{
@@ -201,7 +201,7 @@ func checkPairForDefinedTokens(tokenList *tokenlist.TokenList, tokensMap map[str
 				},
 			)
 
-			token.Token.DefiUSDPrice = token.countAverageUSDPrice()
+			token.Token.USDPrice = token.countAverageUSDPrice()
 			tokensMap[token.Token.Address] = token
 		} else {
 
@@ -215,7 +215,7 @@ func checkPairForDefinedTokens(tokenList *tokenlist.TokenList, tokensMap map[str
 				},
 			}
 
-			newToken.Token.DefiUSDPrice = anotherTokenPriceInUSD
+			newToken.Token.USDPrice = anotherTokenPriceInUSD
 			tokensMap[newToken.Token.Address] = newToken
 		}
 	}

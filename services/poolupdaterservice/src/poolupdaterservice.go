@@ -17,13 +17,22 @@ type PoolUpdaterService interface {
 }
 
 type PoolUpdaterServiceDependencies struct {
-	V3PoolDBRepo        v3poolsrepo.V3PoolDBRepo
-	V3TransactionDBRepo v3transactionrepo.V3TransactionDBRepo
-	V3PoolCacheRepo     v3poolsrepo.V3PoolCacheRepo
-	TokenDBRepo         tokenrepo.TokenRepo
+	TokenDBRepo            tokenrepo.TokenRepo
+	TokenCacheRepo         tokenrepo.TokenCacheRepo
+	V3PoolDBRepo           v3poolsrepo.V3PoolDBRepo
+	V3TransactionDBRepo    v3transactionrepo.V3TransactionDBRepo
+	V3TransactionCacheRepo v3transactionrepo.V3TransactionCacheRepo
+	V3PoolCacheRepo        v3poolsrepo.V3PoolCacheRepo
 }
 
 func (d *PoolUpdaterServiceDependencies) validate() error {
+	if d.TokenDBRepo == nil {
+		return errors.New("pool updater service dependencies TokenDBRepo cannot be nil")
+	}
+	if d.TokenCacheRepo == nil {
+		return errors.New("pool updater service dependencies TokenCacheRepo cannot be nil")
+	}
+
 	if d.V3PoolDBRepo == nil {
 		return errors.New("pool updater service dependencies V3PoolDBRepo cannot be nil")
 	}
@@ -33,12 +42,11 @@ func (d *PoolUpdaterServiceDependencies) validate() error {
 		return errors.New("pool updater service dependencies V3PoolCacheRepo cannot be nil")
 	}
 
-	if d.TokenDBRepo == nil {
-		return errors.New("pool updater service dependencies TokenRepo cannot be nil")
-	}
-
 	if d.V3TransactionDBRepo == nil {
 		return errors.New("pool updater service dependencies V3TransactionDBRepo cannot be nil")
+	}
+	if d.V3TransactionCacheRepo == nil {
+		return errors.New("pool updater service dependencies V3TransactionCacheRepo cannot be nil")
 	}
 
 	return nil
@@ -67,17 +75,22 @@ func (d *PoolUpdaterServiceConfig) validate() error {
 }
 
 type poolUpdaterService struct {
-	tokensMap map[models.TokenIdentificator]*models.Token
+	tokensMapForCache map[models.TokenIdentificator]*models.Token
+	tokensMapForDB    map[models.TokenIdentificator]*models.Token
 
 	currentCheckingBlock    uint64
 	currentBlockPoolChanges map[models.V3PoolIdentificator]models.UniswapV3Pool
 
 	config PoolUpdaterServiceConfig
 
-	tokenDBRepo         tokenrepo.TokenRepo
-	v3PoolDBRepo        v3poolsrepo.V3PoolDBRepo
-	v3PoolCacheRepo     v3poolsrepo.V3PoolCacheRepo
-	v3TransactionDBRepo v3transactionrepo.V3TransactionDBRepo
+	tokenDBRepo    tokenrepo.TokenRepo
+	tokenCacheRepo tokenrepo.TokenCacheRepo
+
+	v3PoolDBRepo    v3poolsrepo.V3PoolDBRepo
+	v3PoolCacheRepo v3poolsrepo.V3PoolCacheRepo
+
+	v3TransactionDBRepo    v3transactionrepo.V3TransactionDBRepo
+	v3TransactionCacheRepo v3transactionrepo.V3TransactionCacheRepo
 }
 
 func New(config PoolUpdaterServiceConfig, dependencies PoolUpdaterServiceDependencies) (PoolUpdaterService, error) {
@@ -89,11 +102,15 @@ func New(config PoolUpdaterServiceConfig, dependencies PoolUpdaterServiceDepende
 	}
 
 	service := poolUpdaterService{
-		tokenDBRepo:             dependencies.TokenDBRepo,
-		config:                  config,
-		v3PoolDBRepo:            dependencies.V3PoolDBRepo,
-		v3PoolCacheRepo:         dependencies.V3PoolCacheRepo,
-		v3TransactionDBRepo:     dependencies.V3TransactionDBRepo,
+		config: config,
+
+		tokenDBRepo:            dependencies.TokenDBRepo,
+		tokenCacheRepo:         dependencies.TokenCacheRepo,
+		v3PoolDBRepo:           dependencies.V3PoolDBRepo,
+		v3PoolCacheRepo:        dependencies.V3PoolCacheRepo,
+		v3TransactionDBRepo:    dependencies.V3TransactionDBRepo,
+		v3TransactionCacheRepo: dependencies.V3TransactionCacheRepo,
+
 		currentCheckingBlock:    0,
 		currentBlockPoolChanges: map[models.V3PoolIdentificator]models.UniswapV3Pool{},
 	}
@@ -103,9 +120,18 @@ func New(config PoolUpdaterServiceConfig, dependencies PoolUpdaterServiceDepende
 		return nil, err
 	}
 
-	service.tokensMap = map[models.TokenIdentificator]*models.Token{}
+	service.tokensMapForDB = map[models.TokenIdentificator]*models.Token{}
 	for _, token := range tokens {
-		service.tokensMap[token.GetIdentificator()] = &token
+		service.tokensMapForDB[token.GetIdentificator()] = token
+	}
+	tokens, err = service.tokenDBRepo.GetTokensByChainID(config.ChainID)
+	if err != nil {
+		return nil, err
+	}
+
+	service.tokensMapForCache = map[models.TokenIdentificator]*models.Token{}
+	for _, token := range tokens {
+		service.tokensMapForCache[token.GetIdentificator()] = token
 	}
 
 	pools, err := service.v3PoolDBRepo.GetPoolsByChainID(config.ChainID)

@@ -16,7 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []common.Address, blockNumber *big.Int) error {
+func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []common.Address) error {
 	fmt.Println("Configuring RpcSyncService...")
 	err := s.configure(ctx, addresses)
 	if err != nil {
@@ -43,13 +43,17 @@ func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []c
 	}
 	defer sub.Unsubscribe()
 
-	lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, blockNumber)
+	lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, big.NewInt(int64(s.lastCheckedBlock+1)))
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("END PRELOADING, PRODUCING NEW MESSAGES")
-	s.ListenNewLogs(ctx, sub, lastSentBlock, logsCh)
+	err = s.ListenNewLogs(ctx, sub, lastSentBlock, logsCh)
+	if err != nil {
+		s.StartFromBlockV3(ctx, addresses)
+	}
+
 	return nil
 }
 
@@ -82,7 +86,8 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 				continue
 			}
 
-			fmt.Println(lg.Address, lg.BlockNumber, poolEvent.Type)
+			fmt.Println("a", lg.Address, lg.BlockNumber, poolEvent.Type, poolEvent.TxHash)
+			fmt.Println("h", lg.TxHash.Hex())
 			err = s.kafkaClient.sendUpdateV3PricesEvent(poolEvent)
 			if err != nil {
 				fmt.Println("KAFKA ERR: ", err)
@@ -91,8 +96,7 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 			logCount++
 
 		case <-s.ticker.C:
-			if !s.lastLogTime.IsZero() && s.lastOveredBlockNumber < s.lastLogBlockNumber && time.Since(s.lastLogTime) > quietDelay {
-				s.lastOveredBlockNumber = s.lastLogBlockNumber
+			if !s.lastLogTime.IsZero() && s.lastCheckedBlock < s.lastLogBlockNumber && time.Since(s.lastLogTime) > quietDelay {
 				err := s.kafkaClient.sendUpdateV3PricesEvent(poolEvent{
 					Type:        BLOCK_OVER,
 					Data:        nil,
@@ -101,6 +105,7 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 				if err != nil {
 					fmt.Println("KAFKA ERR: ", err)
 				}
+				s.setLastCheckedBlock(uint64(s.lastLogBlockNumber))
 				fmt.Println("successful logs: ", logCount)
 
 			}
@@ -162,6 +167,8 @@ func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, 
 			if err != nil {
 				fmt.Println("KAFKA ERR: ", err)
 			}
+
+			s.setLastCheckedBlock(uint64(blockNumber.Int64()))
 
 			batchIndex = -1
 		} else if batchIndex == 9 {

@@ -58,7 +58,7 @@ func New(chainID uint, dependencies ArbitrageServiceDependencies) (ArbitrageServ
 	}
 	tokenIDs := map[models.TokenIdentificator]*models.Token{}
 	for _, token := range tokens {
-		tokenIDs[token.GetIdentificator()] = &token
+		tokenIDs[token.GetIdentificator()] = token
 	}
 
 	// pairs, err := dependencies.V2PairRepo.GetNonDustyPairsByChainID(chainID)

@@ -32,9 +32,16 @@ func main() {
 		panic(err)
 	}
 
-	tokenRepo, err := tokenrepo.New(tokenrepo.TokenRepoDependencies{
+	tokenRepo, err := tokenrepo.NewDBRepo(tokenrepo.TokenDBRepoDependencies{
 		Database: pgDB,
 	})
+	if err != nil {
+		panic(err)
+	}
+	tokenCacheRepo, err := tokenrepo.NewCacheRepo(context.Background(), tokenrepo.TokenCacheRepoConfig{
+		RedisServer: env.REDIS_SERVER,
+	})
+
 	if err != nil {
 		panic(err)
 	}
@@ -60,16 +67,25 @@ func main() {
 		panic(err)
 	}
 
+	v3TransactionCacheRepo, err := v3transactionrepo.NewCacheRepo(context.Background(), v3transactionrepo.V3TransacationCacheRepoConfig{
+		RedisServer: env.REDIS_SERVER,
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	poolUpdaterServiceConfig := poolupdaterservice.PoolUpdaterServiceConfig{
 		ChainID:                 chainID,
 		KafkaServer:             env.KAFKA_SERVER,
 		KafkaUpdateV3PoolsTopic: env.KAFKA_UPDATE_V3_POOLS_TOPIC,
 	}
 	poolUpdaterServiceDependencies := poolupdaterservice.PoolUpdaterServiceDependencies{
-		TokenDBRepo:         tokenRepo,
-		V3PoolDBRepo:        v3PoolsDBRepo,
-		V3PoolCacheRepo:     v3PoolsCacheRepo,
-		V3TransactionDBRepo: v3TransactionDBRepo,
+		TokenDBRepo:            tokenRepo,
+		TokenCacheRepo:         tokenCacheRepo,
+		V3PoolDBRepo:           v3PoolsDBRepo,
+		V3PoolCacheRepo:        v3PoolsCacheRepo,
+		V3TransactionDBRepo:    v3TransactionDBRepo,
+		V3TransactionCacheRepo: v3TransactionCacheRepo,
 	}
 	poolUpdaterService, err := poolupdaterservice.New(poolUpdaterServiceConfig, poolUpdaterServiceDependencies)
 	if err != nil {

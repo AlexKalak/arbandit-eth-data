@@ -16,13 +16,13 @@ const (
 )
 
 type V3Transaction struct {
-	ID                    int
-	PoolAddress           string
-	ChainID               uint
-	TxHash                string
-	BlockNumber           uint64
-	Amount0               *big.Int
-	Amount1               *big.Int
-	ArchiveToken0USDPrice *big.Float
-	ArchiveToken1USDPrice *big.Float
+	ID                    int        `json:"id"`
+	PoolAddress           string     `json:"pool_address"`
+	ChainID               uint       `json:"chain_id"`
+	TxHash                string     `json:"tx_hash"`
+	BlockNumber           uint64     `json:"block_number"`
+	Amount0               *big.Int   `json:"amount0"`
+	Amount1               *big.Int   `json:"amount1"`
+	ArchiveToken0USDPrice *big.Float `json:"archive_token0_usd_price"`
+	ArchiveToken1USDPrice *big.Float `json:"archive_token1_usd_price"`
 }

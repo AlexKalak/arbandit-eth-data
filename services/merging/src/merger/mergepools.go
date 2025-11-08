@@ -7,6 +7,7 @@ import (
 	"math/big"
 
 	"github.com/alexkalak/go_market_analyze/common/core/exchangables/v3poolexchangable"
+	"github.com/alexkalak/go_market_analyze/common/helpers"
 	"github.com/alexkalak/go_market_analyze/common/models"
 )
 
@@ -224,7 +225,7 @@ func (m *merger) ValidateV3PoolsAndComputeAverageUSDPrice(chainID uint) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(stableCoins)
+	fmt.Println(helpers.GetJSONString(stableCoins))
 
 	pools, err := m.v3PoolsDBRepo.GetPoolsByChainID(chainID)
 	if err != nil {
@@ -234,8 +235,9 @@ func (m *merger) ValidateV3PoolsAndComputeAverageUSDPrice(chainID uint) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("Len tokens: ", len(tokens))
 
-	tokenPricesMap, notDustyPoolsMap, err := v3poolexchangable.
+	definedTokens, notDustyPoolsMap, err := v3poolexchangable.
 		ValidateV3PoolsAndGetAverageUSDPriceForTokens(
 			chainID,
 			tokens,
@@ -248,16 +250,12 @@ func (m *merger) ValidateV3PoolsAndComputeAverageUSDPrice(chainID uint) error {
 	}
 
 	fmt.Println("Not dusty pools: ", len(notDustyPoolsMap))
-
-	updatingTokens := make([]models.Token, 0, len(tokenPricesMap))
-	for _, token := range tokens {
-		if price, ok := tokenPricesMap[token.Address]; ok {
-			token.DefiUSDPrice = price
-			updatingTokens = append(updatingTokens, token)
-		}
+	lenImpacts := 0
+	for _, token := range definedTokens {
+		lenImpacts += len(token.GetImpacts())
 	}
 
-	err = m.tokenRepo.UpdateTokens(updatingTokens)
+	err = m.tokenRepo.UpdateTokens(definedTokens)
 	if err != nil {
 		return err
 	}
@@ -269,9 +267,6 @@ func (m *merger) ValidateV3PoolsAndComputeAverageUSDPrice(chainID uint) error {
 
 			pools[i].Zfo10USDRate = nonDustyPool.Zfo10USDRate
 			pools[i].NonZfo10USDRate = nonDustyPool.NonZfo10USDRate
-
-			fmt.Println(pools[i].Address, pools[i].Zfo10USDRate)
-			fmt.Println(pools[i].Address, pools[i].NonZfo10USDRate)
 
 			notDustyPools = append(notDustyPools, pools[i])
 		}

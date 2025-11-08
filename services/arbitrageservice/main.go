@@ -30,7 +30,7 @@ func main() {
 		panic(err)
 	}
 
-	tokenRepo, err := tokenrepo.New(tokenrepo.TokenRepoDependencies{
+	tokenRepo, err := tokenrepo.NewDBRepo(tokenrepo.TokenDBRepoDependencies{
 		Database: pgDB,
 	})
 	if err != nil {

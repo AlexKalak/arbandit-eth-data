@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/big"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,7 +30,7 @@ type v3ExchangeABI struct {
 }
 
 type RPCEventsCollectorService interface {
-	StartFromBlockV3(ctx context.Context, addresses []common.Address, blockNumber *big.Int) error
+	StartFromBlockV3(ctx context.Context, addresses []common.Address) error
 }
 
 type RPCEventsCollectorServiceConfig struct {
@@ -76,6 +79,9 @@ const (
 )
 
 type rpcEventsCollector struct {
+	lastCheckedBlock     uint64
+	lastCheckedBlockFile *os.File
+
 	config RPCEventsCollectorServiceConfig
 
 	abis map[abiName]v3ExchangeABI
@@ -85,10 +91,9 @@ type rpcEventsCollector struct {
 	kafkaClient    kafkaClient
 	addresses      map[common.Address]any
 
-	lastLogTime           time.Time
-	lastLogBlockNumber    uint64
-	lastOveredBlockNumber uint64
-	ticker                *time.Ticker
+	lastLogTime        time.Time
+	lastLogBlockNumber uint64
+	ticker             *time.Ticker
 
 	v3PoolRepo v3poolsrepo.V3PoolDBRepo
 }
@@ -100,6 +105,29 @@ func New(config RPCEventsCollectorServiceConfig, dependencies RPCEventCollectorS
 	if err := dependencies.validate(); err != nil {
 		return nil, err
 	}
+
+	os.MkdirAll("blocks", 0777)
+	var lastCheckedBlock uint64
+	path := fmt.Sprintf("./blocks/%d.txt", config.ChainID)
+	lastCheckedBlockFile, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0777)
+	if err != nil {
+		return nil, err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println(absPath)
+
+	blockBytes, err := io.ReadAll(lastCheckedBlockFile)
+	if err != nil {
+		return nil, err
+	}
+	lastCheckedBlockInt, err := strconv.Atoi(strings.TrimSpace(string(blockBytes)))
+	if err != nil {
+		return nil, err
+	}
+	lastCheckedBlock = uint64(lastCheckedBlockInt)
 
 	uniswapV3EventsABI, err := abi.JSON(strings.NewReader(abiassets.EventsABIUniswapV3String))
 	if err != nil {
@@ -138,9 +166,12 @@ func New(config RPCEventsCollectorServiceConfig, dependencies RPCEventCollectorS
 	fmt.Println(uniswapABI.MintV3Sig)
 	fmt.Println(uniswapABI.BurnV3Sig)
 	fmt.Println(uniswapABI.FlashV3Sig)
+	fmt.Println("lastBlockNumber: ", lastCheckedBlock)
 
 	return &rpcEventsCollector{
-		config: config,
+		lastCheckedBlock:     lastCheckedBlock,
+		lastCheckedBlockFile: lastCheckedBlockFile,
+		config:               config,
 		abis: map[abiName]v3ExchangeABI{
 			_UNISWAP_V3_ABI_NAME:     uniswapABI,
 			_PANCAKESWAP_V3_ABI_NAME: pancakeswapABI,
@@ -185,5 +216,25 @@ func (s *rpcEventsCollector) configure(ctx context.Context, addresses []common.A
 	for _, address := range addresses {
 		s.addresses[address] = new(any)
 	}
+	return nil
+}
+
+func (s *rpcEventsCollector) setLastCheckedBlock(blockNumber uint64) error {
+	err := s.lastCheckedBlockFile.Truncate(0)
+	if err != nil {
+		return err
+	}
+
+	// Move cursor to beginning (important!)
+	_, err = s.lastCheckedBlockFile.Seek(0, 0)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.lastCheckedBlockFile.Write([]byte(fmt.Sprint(blockNumber)))
+	if err != nil {
+		return err
+	}
+	s.lastCheckedBlock = blockNumber
 	return nil
 }

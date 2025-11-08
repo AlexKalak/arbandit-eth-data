@@ -219,7 +219,7 @@ func (g *exchangesGraph) FindAllArbs(maxDepth int, initAmount *big.Int) {
 func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount *big.Int) ([]int, bool) {
 	token := g.tokens[startTokenIndex]
 
-	tokenAmountForOneUSD := new(big.Float).Quo(big.NewFloat(1), token.DefiUSDPrice)
+	tokenAmountForOneUSD := new(big.Float).Quo(big.NewFloat(1), token.USDPrice)
 	tokenAmountNeeded := new(big.Float).Mul(tokenAmountForOneUSD, new(big.Float).SetInt(initAmount))
 
 	amount := new(big.Float).Mul(new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(token.Decimals)), nil)), tokenAmountNeeded)
@@ -249,14 +249,21 @@ func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount 
 			continue
 		}
 
+	edgeLoop:
 		for _, e := range g.edgesGraph[path.tokenIndex] {
 			next := e.To
 			if next == path.tokenIndex {
 				continue
 			}
 
-			if next != startTokenIndex && slices.Contains(path.hops, next) {
+			if next != startTokenIndex && (slices.Contains(path.hops, next)) {
 				continue
+			}
+
+			for _, usedEdge := range path.usedEdges {
+				if usedEdge.Exchangable.Address() == e.Exchangable.Address() {
+					continue edgeLoop
+				}
 			}
 
 			newAmountF := new(big.Float).Mul(new(big.Float).SetInt(path.amount), e.Exchangable.GetRate(e.Zfo))

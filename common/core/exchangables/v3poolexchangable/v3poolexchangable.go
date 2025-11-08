@@ -219,16 +219,25 @@ func (e *ExchangableUniswapV3PoolRaw) ImitateSwap(amountIn *big.Int, zfo bool) (
 
 	for remaining.Sign() > 0 {
 		nextTick := 0
+		shifting := min(e.Pool.TickSpacing, 150)
+
 		if zfo {
-			nextTick = currentTick - e.Pool.TickSpacing
+			nextTick = currentTick - shifting
+			if nextTick < e.Pool.Tick-shifting {
+				return nil, errors.New("too much slippage")
+			}
+
 		} else {
 			nextTick = currentTick + e.Pool.TickSpacing
+			if nextTick > e.Pool.Tick+shifting {
+				return nil, errors.New("too much slippage")
+			}
 		}
 
-		if nextTick < e.Pool.TickLower || nextTick > e.Pool.TickUpper {
-			return nil, errors.New("tick out of space")
-
-		}
+		// if nextTick < e.Pool.TickLower || nextTick > e.Pool.TickUpper {
+		// 	return nil, errors.New("tick out of space")
+		//
+		// }
 
 		if nextTick < -887272 || nextTick > 887272 {
 			return nil, errors.New("tick out of range")

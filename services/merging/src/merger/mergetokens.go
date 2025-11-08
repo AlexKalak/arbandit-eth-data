@@ -34,12 +34,12 @@ func (m *merger) MergeTokens(chainID uint) error {
 		return err
 	}
 
-	tokens := make([]models.Token, 0, len(tokensRaw))
+	tokens := make([]*models.Token, 0, len(tokensRaw))
 	for _, rawToken := range tokensRaw {
 		if rawToken.ChainID != int(chainID) {
 			continue
 		}
-		tokens = append(tokens, models.Token{
+		tokens = append(tokens, &models.Token{
 			ChainID:  chainID,
 			Address:  rawToken.Address,
 			Name:     rawToken.Name,
@@ -56,7 +56,7 @@ func (m *merger) MergeTokens(chainID uint) error {
 		models.TOKEN_SYMBOL,
 		models.TOKEN_LOGOURI,
 		models.TOKEN_DECIMALS,
-		models.TOKEN_DEFI_USD_PRICE,
+		models.TOKEN_USD_PRICE,
 	)
 
 	tokensMap := map[string]any{}
@@ -99,7 +99,7 @@ func (m *merger) MergeTokens(chainID uint) error {
 				models.TOKEN_SYMBOL,
 				models.TOKEN_LOGOURI,
 				models.TOKEN_DECIMALS,
-				models.TOKEN_DEFI_USD_PRICE,
+				models.TOKEN_USD_PRICE,
 			)
 
 		}

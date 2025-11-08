@@ -191,9 +191,9 @@ func (r *v3poolCacheRepo) SetBlockNumber(chainID uint, blockNumber uint64) error
 		return err
 	}
 
-	fmt.Println(getPoolsHashByChainID(chainID))
-	fmt.Println(BLOCK_NUMBER_KEY)
-	fmt.Println(blockNumber)
+	// fmt.Println(getPoolsHashByChainID(chainID))
+	// fmt.Println(BLOCK_NUMBER_KEY)
+	// fmt.Println(blockNumber)
 	resp := rdb.HSet(r.ctx, getPoolsHashByChainID(chainID), BLOCK_NUMBER_KEY, blockNumber)
 	if resp.Err() != nil {
 		return resp.Err()

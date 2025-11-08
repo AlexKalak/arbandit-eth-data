@@ -70,14 +70,6 @@ func (r *transactionDBRepo) CreateTransaction(tx *models.V3Transaction) error {
 		tx.ArchiveToken1USDPrice.Text('f', -1),
 	)
 
-	sqlText, args, err := query.ToSql()
-	if err != nil {
-		return err
-	}
-
-	fmt.Println(sqlText)
-	fmt.Println(args)
-
 	_, err = query.RunWith(db).Exec()
 	if err != nil {
 		fmt.Println(err)
