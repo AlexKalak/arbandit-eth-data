@@ -35,21 +35,46 @@ func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []c
 		Topics:    [][]common.Hash{{uniswapABI.SwapV3Sig}},
 	}
 
+	headCh := make(chan *types.Header, 1024)
 	logsCh := make(chan types.Log, 1024)
 
+	fmt.Println("Subscribing to head...")
+	subHead, err := s.wsLogsClient.SubscribeNewHead(ctx, headCh)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Subscribing to logs...")
 	sub, err := s.wsLogsClient.SubscribeFilterLogs(ctx, query, logsCh)
 	if err != nil {
 		return err
 	}
 	defer sub.Unsubscribe()
 
-	lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, big.NewInt(int64(s.lastCheckedBlock+1)))
+	currentHead, err := s.wsLogsClient.HeaderByNumber(ctx, nil)
 	if err != nil {
-		return err
+		fmt.Println("Error getting last block header: ", err)
+		time.Sleep(3 * time.Second)
+		return s.StartFromBlockV3(ctx, addresses)
 	}
 
+	if currentHead.Number.Uint64()-s.lastCheckedBlock > 3000 {
+		err := s.mergeFromBlock(ctx, s.config.ChainID, currentHead.Number)
+		if err != nil {
+			return err
+		}
+		s.setLastCheckedBlock(currentHead.Number.Uint64())
+	} else {
+		lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, big.NewInt(int64(s.lastCheckedBlock+1)), currentHead.Number)
+		if err != nil {
+			return err
+		}
+		s.setLastCheckedBlock(lastSentBlock)
+	}
+
+	fmt.Println("Got head: ", currentHead)
 	fmt.Println("END PRELOADING, PRODUCING NEW MESSAGES")
-	err = s.ListenNewLogs(ctx, sub, lastSentBlock, logsCh)
+	err = s.ListenNewLogs(ctx, sub, subHead, s.lastCheckedBlock, logsCh, headCh)
 	if err != nil {
 		s.StartFromBlockV3(ctx, addresses)
 	}
@@ -57,15 +82,75 @@ func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []c
 	return nil
 }
 
-func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Subscription, fromBlock uint64, logsCh <-chan types.Log) error {
+func (s *rpcEventsCollector) mergeFromBlock(ctx context.Context, chainID uint, blockNumber *big.Int) error {
+	fmt.Println("Merging pools...")
+	err := s.merger.MergePools(chainID)
+	if err != nil {
+		fmt.Println("Merging pools error: ", err)
+		return err
+	}
+	fmt.Println("Merging pools done.")
+
+	fmt.Println("Merging pools data...")
+	err = s.merger.MergePoolsData(ctx, chainID, blockNumber)
+	if err != nil {
+		fmt.Println("Merging pools data error: ", err)
+		return err
+	}
+	fmt.Println("Merging pools data done.")
+
+	fmt.Println("Merging pools ticks...")
+	err = s.merger.MergePoolsTicks(ctx, chainID, blockNumber)
+	if err != nil {
+		fmt.Println("Merging pools ticks error: ", err)
+		return err
+	}
+	fmt.Println("Merging pools ticks done.")
+
+	fmt.Println("Validating pools ...")
+	err = s.merger.ValidateV3PoolsAndComputeAverageUSDPrice(chainID)
+	if err != nil {
+		fmt.Println("Validating pools error: ", err)
+		return err
+	}
+	fmt.Println("Validating pools done.")
+
+	return nil
+}
+
+func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Subscription, headSub ethereum.Subscription, fromBlock uint64, logsCh <-chan types.Log, headsCh <-chan *types.Header) error {
 	logCount := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return errors.New("rpc service stopped because of ctx done")
 		case err := <-sub.Err():
-			log.Println("subscription error:", err)
+			log.Println("logs subscription error:", err)
 			return err
+		case err := <-headSub.Err():
+			log.Println("head subscription error:", err)
+			return err
+		case head := <-headsCh:
+			if head == nil {
+				continue
+			}
+
+			blockNum := head.Number.Uint64()
+
+			s.headsAndLogsData.mu.Lock()
+			s.headsAndLogsData.blockTimestamps[blockNum] = head.Time
+			fmt.Println("blockNumber", blockNum, "timestamp", head.Time)
+
+			if logs, ok := s.headsAndLogsData.pendingLogs[blockNum]; ok {
+				fmt.Println("pending for block: ", blockNum)
+				for _, log := range logs {
+					s.processNewLog(log, head.Time)
+				}
+				delete(s.headsAndLogsData.pendingLogs, blockNum)
+			}
+
+			s.headsAndLogsData.mu.Unlock()
+
 		case lg := <-logsCh:
 			// process log (dedupe inside)
 			if fromBlock > lg.BlockNumber {
@@ -73,29 +158,26 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 				continue
 			}
 
-			s.lastLogTime = time.Now()
-			s.lastLogBlockNumber = lg.BlockNumber
-
-			if _, ok := s.addresses[lg.Address]; !ok {
-				continue
-			}
-
-			poolEvent, err := s.handleLog(lg)
-			if err != nil {
-				log.Println("handleLog err:", err)
-				continue
-			}
-
-			fmt.Println("a", lg.Address, lg.BlockNumber, poolEvent.Type, poolEvent.TxHash)
-			fmt.Println("h", lg.TxHash.Hex())
-			err = s.kafkaClient.sendUpdateV3PricesEvent(poolEvent)
-			if err != nil {
-				fmt.Println("KAFKA ERR: ", err)
+			s.headsAndLogsData.mu.Lock()
+			ts, ok := s.headsAndLogsData.blockTimestamps[lg.BlockNumber]
+			if ok {
+				s.headsAndLogsData.mu.Unlock()
+				s.processNewLog(lg, ts)
+			} else {
+				fmt.Println("Waiting for header...")
+				s.headsAndLogsData.pendingLogs[lg.BlockNumber] = append(s.headsAndLogsData.pendingLogs[lg.BlockNumber], lg)
+				s.headsAndLogsData.mu.Unlock()
 			}
 
 			logCount++
 
 		case <-s.ticker.C:
+			s.headsAndLogsData.mu.Lock()
+			if len(s.headsAndLogsData.pendingLogs) > 0 {
+				continue
+			}
+			s.headsAndLogsData.mu.Unlock()
+
 			if !s.lastLogTime.IsZero() && s.lastCheckedBlock < s.lastLogBlockNumber && time.Since(s.lastLogTime) > quietDelay {
 				err := s.kafkaClient.sendUpdateV3PricesEvent(poolEvent{
 					Type:        BLOCK_OVER,
@@ -114,11 +196,44 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 
 }
 
-func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, blockNumber *big.Int) (uint64, error) {
-	logs, err := s.requireSwapEventsFromBlock(ctx, blockNumber)
+func (s *rpcEventsCollector) processNewLog(lg types.Log, blockTimestamp uint64) {
+	s.lastLogTime = time.Now()
+	s.lastLogBlockNumber = lg.BlockNumber
+
+	if _, ok := s.addresses[lg.Address]; !ok {
+		return
+	}
+
+	poolEvent, err := s.handleLog(lg)
+	if err != nil {
+		log.Println("handleLog err:", err)
+		return
+	}
+	poolEvent.TxTimestamp = blockTimestamp
+
+	fmt.Println("a", lg.Address, poolEvent.Type, poolEvent.TxHash, poolEvent.TxTimestamp, lg.BlockNumber)
+	err = s.kafkaClient.sendUpdateV3PricesEvent(poolEvent)
+	if err != nil {
+		fmt.Println("KAFKA ERR: ", err)
+	}
+}
+
+func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, blockNumber *big.Int, headBlockNumber *big.Int) (uint64, error) {
+	fmt.Println("Producing history events: ")
+	fmt.Println("Requesting timestamps...")
+	timestamps, err := s.getBlocksInfo(ctx, blockNumber.Uint64(), headBlockNumber.Uint64())
 	if err != nil {
 		return 0, err
 	}
+	fmt.Println("Got timestamps...")
+	fmt.Println(helpers.GetJSONString(timestamps))
+
+	fmt.Println("Requesting logs.")
+	logs, err := s.requireSwapEventsFromBlock(ctx, blockNumber, headBlockNumber, 1)
+	if err != nil {
+		return 0, err
+	}
+	fmt.Println("Got logs.")
 
 	var currentBlock uint64 = 0
 
@@ -128,25 +243,33 @@ func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, 
 	for i, lg := range logs {
 		batchIndex++
 
+		timestamp, ok := timestamps[lg.BlockNumber]
+		if !ok {
+			fmt.Println("Not found timestamp: ", lg.BlockNumber)
+			continue
+		}
+
 		if currentBlock == 0 {
 			currentBlock = uint64(lg.BlockNumber)
 		} else if currentBlock > (uint64(lg.BlockNumber)) {
-			fmt.Println(lg.BlockNumber, lg.Address)
-			panic("history events are not sorted")
+			fmt.Println("blockNumber:", lg.BlockNumber, "currentBlock:", currentBlock)
+			batchIndex--
+			continue
 		}
 
 		currentEvent, err := s.handleLog(lg)
 		if err != nil {
 			log.Println("handleLog err:", err)
+			batchIndex--
 			continue
 		}
+		currentEvent.TxTimestamp = timestamp
 
 		eventsForBatch[batchIndex] = currentEvent
 
 		isLastEventInBlock := i < len(logs)-1 && logs[i+1].BlockNumber > uint64(currentBlock)
 
 		if isLastEventInBlock || i == len(logs)-1 {
-
 			events := eventsForBatch[:batchIndex+1]
 			batchIndex = 0
 
@@ -168,7 +291,10 @@ func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, 
 				fmt.Println("KAFKA ERR: ", err)
 			}
 
-			s.setLastCheckedBlock(uint64(blockNumber.Int64()))
+			err = s.setLastCheckedBlock(uint64(blockNumber.Int64()))
+			if err != nil {
+				fmt.Println("error setting lastCheckedBlock: ", err)
+			}
 
 			batchIndex = -1
 		} else if batchIndex == 9 {
@@ -185,7 +311,28 @@ func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, 
 	return currentBlock, nil
 }
 
-func (s *rpcEventsCollector) requireSwapEventsFromBlock(ctx context.Context, blockNumber *big.Int) ([]types.Log, error) {
+func (s *rpcEventsCollector) getBlocksInfo(ctx context.Context, fromBlock uint64, toBlock uint64) (map[uint64]uint64, error) {
+	timestamps := map[uint64]uint64{}
+
+	for blockNumber := fromBlock; blockNumber <= toBlock; blockNumber++ {
+		fmt.Println("Requesting header for block: ", blockNumber)
+		header, err := s.wsLogsClient.HeaderByNumber(ctx, big.NewInt(int64(blockNumber)))
+		if err != nil {
+			return nil, err
+		}
+
+		timestamps[blockNumber] = header.Time
+	}
+
+	return timestamps, nil
+}
+
+func (s *rpcEventsCollector) requireSwapEventsFromBlock(ctx context.Context, blockNumber *big.Int, currentHeadBlockNumber *big.Int, chunksCount int) ([]types.Log, error) {
+	fmt.Println("requiring old logs chunks:", chunksCount)
+	if chunksCount <= 0 {
+		chunksCount = 1
+	}
+
 	uniswapABI, ok := s.abis[_UNISWAP_V3_ABI_NAME]
 	if !ok {
 		return nil, errors.New("abi not found")
@@ -199,23 +346,41 @@ func (s *rpcEventsCollector) requireSwapEventsFromBlock(ctx context.Context, blo
 	// 	return nil, errors.New("abi not found")
 	// }
 
-	query := ethereum.FilterQuery{
-		FromBlock: blockNumber,
-		Topics:    [][]common.Hash{{uniswapABI.SwapV3Sig}},
-	}
+	validLogs := make([]types.Log, 0)
+	blocksByChunk := new(big.Int).Sub(currentHeadBlockNumber, blockNumber)
+	blocksByChunk.Div(blocksByChunk, big.NewInt(int64(chunksCount)))
 
-	logs, err := s.httpLogsClient.FilterLogs(ctx, query)
-	fmt.Println("Len logs: ", len(logs))
-	if err != nil {
-		fmt.Println("Error quering logs: ", err)
-		return nil, err
-	}
-
-	validLogs := make([]types.Log, 0, len(logs))
-	for _, log := range logs {
-		if _, ok := s.addresses[log.Address]; ok {
-			validLogs = append(validLogs, log)
+	for i := range chunksCount {
+		query := ethereum.FilterQuery{
+			FromBlock: blockNumber,
+			ToBlock: new(big.Int).Add(
+				blockNumber,
+				new(big.Int).Mul(
+					blocksByChunk,
+					big.NewInt(int64(i+1)),
+				)),
+			Topics: [][]common.Hash{{uniswapABI.SwapV3Sig}},
 		}
+
+		logs, err := s.wsLogsClient.FilterLogs(ctx, query)
+
+		fmt.Println("Len logs: ", len(logs))
+		if err != nil {
+			if strings.Contains(err.Error(), "query exceeds max results") || strings.Contains(err.Error(), "range is over limit") {
+				time.Sleep(1)
+				return s.requireSwapEventsFromBlock(ctx, blockNumber, currentHeadBlockNumber, chunksCount+1)
+			}
+
+			fmt.Println("Error quering logs: ", err)
+			return nil, err
+		}
+
+		for _, log := range logs {
+			if _, ok := s.addresses[log.Address]; ok {
+				validLogs = append(validLogs, log)
+			}
+		}
+
 	}
 
 	return validLogs, nil
@@ -258,7 +423,6 @@ func (s *rpcEventsCollector) handleLog(lg types.Log) (poolEvent, error) {
 }
 
 func (s *rpcEventsCollector) handlePancakeswapV3Log(lg types.Log) (poolEvent, error) {
-	fmt.Println("Pancakeswap log: ", time.Unix(int64(lg.BlockTimestamp), 0))
 	abiForEvent, ok := s.abis[_PANCAKESWAP_V3_ABI_NAME]
 	if !ok {
 		return poolEvent{}, fmt.Errorf("abi with name %s not found", _UNISWAP_V3_ABI_NAME)
@@ -316,7 +480,6 @@ func (s *rpcEventsCollector) handlePancakeswapV3Log(lg types.Log) (poolEvent, er
 }
 
 func (s *rpcEventsCollector) handleSushiswapV3Log(lg types.Log) (poolEvent, error) {
-	fmt.Println("Sushi swap log: ", time.Unix(int64(lg.BlockTimestamp), 0))
 	abiForEvent, ok := s.abis[_SUSHISWAP_V3_ABI_NAME]
 	if !ok {
 		return poolEvent{}, fmt.Errorf("abi with name %s not found", _UNISWAP_V3_ABI_NAME)

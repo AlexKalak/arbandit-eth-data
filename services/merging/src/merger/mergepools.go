@@ -12,6 +12,12 @@ import (
 )
 
 func (m *merger) MergePools(chainID uint) error {
+	err := m.v3PoolsDBRepo.DeletePoolsByChain(chainID)
+	if err != nil {
+		fmt.Println("Deleting pools error: ", err)
+		return err
+	}
+
 	db, err := m.database.GetDB()
 	if err != nil {
 		return err

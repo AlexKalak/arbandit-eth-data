@@ -9,13 +9,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v3poolsrepo"
 	abiassets "github.com/alexkalak/go_market_analyze/services/eventcollectorservice/src/eventcollectorassets"
-	"github.com/alexkalak/go_market_analyze/services/eventcollectorservice/src/eventcollectorerrors"
+	"github.com/alexkalak/go_market_analyze/services/merging/src/merger"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -62,9 +64,13 @@ func (d *RPCEventsCollectorServiceConfig) validate() error {
 }
 
 type RPCEventCollectorServiceDependencies struct {
+	Merger merger.Merger
 }
 
 func (d *RPCEventCollectorServiceDependencies) validate() error {
+	if d.Merger == nil {
+		return errors.New("RPCEventsCollectorServiceDependencies.Merger cannot be nil")
+	}
 	return nil
 }
 
@@ -77,6 +83,14 @@ const (
 
 	_UNISWAP_V2_ABI_Name abiName = "uniswap_v2_events"
 )
+
+type headAndLogsSync struct {
+	mu sync.Mutex
+	//blocknumber -> blocktimestamp
+	blockTimestamps map[uint64]uint64
+	//blocknumber -> logs
+	pendingLogs map[uint64][]types.Log
+}
 
 type rpcEventsCollector struct {
 	lastCheckedBlock     uint64
@@ -96,6 +110,9 @@ type rpcEventsCollector struct {
 	ticker             *time.Ticker
 
 	v3PoolRepo v3poolsrepo.V3PoolDBRepo
+
+	headsAndLogsData headAndLogsSync
+	merger           merger.Merger
 }
 
 func New(config RPCEventsCollectorServiceConfig, dependencies RPCEventCollectorServiceDependencies) (RPCEventsCollectorService, error) {
@@ -179,22 +196,32 @@ func New(config RPCEventsCollectorServiceConfig, dependencies RPCEventCollectorS
 		},
 		lastLogTime: time.Time{},
 		ticker:      time.NewTicker(quietDelay),
+		headsAndLogsData: headAndLogsSync{
+			blockTimestamps: map[uint64]uint64{},
+			pendingLogs:     map[uint64][]types.Log{},
+		},
+		merger: dependencies.Merger,
 	}, nil
 }
 
 func (s *rpcEventsCollector) configure(ctx context.Context, addresses []common.Address) error {
+	fmt.Println("Requesting ws client...")
 	logsWsClient, err := ethclient.DialContext(ctx, s.config.MainnetRPCWS)
 	if err != nil {
-		fmt.Println("Unable to init ws logs clinet error", err)
-		return eventcollectorerrors.ErrUnableToInitWsLogsClient
+		fmt.Println("Unable to init ws logs clinet error, waiting for 3 secs...", err)
+		time.Sleep(3 * time.Second)
+		return s.configure(ctx, addresses)
 	}
+	fmt.Println("Requesting http client...")
 	logsHTTPClient, err := ethclient.DialContext(ctx, s.config.MainnetRPCHTTP)
 	if err != nil {
-		fmt.Println("Unable to init http logs clinet error", err)
+		fmt.Println("Unable to init http logs clinet error, waiting for 3 secs...", err)
 		logsWsClient.Close()
-		return eventcollectorerrors.ErrUnableToInitWsLogsClient
+		time.Sleep(3 * time.Second)
+		return s.configure(ctx, addresses)
 	}
 
+	fmt.Println("Initializing kafka client...")
 	kafkaClient, err := newKafkaClient(kafkaClientConfig{
 		ChainID:     s.config.ChainID,
 		KafkaServer: s.config.KafkaServer,
@@ -204,7 +231,9 @@ func (s *rpcEventsCollector) configure(ctx context.Context, addresses []common.A
 	if err != nil {
 		logsWsClient.Close()
 		logsHTTPClient.Close()
-		return err
+		fmt.Println("Unable to init kafka client error, waiting for 3 secs...", err)
+		time.Sleep(3 * time.Second)
+		return s.configure(ctx, addresses)
 	}
 
 	s.kafkaClient = kafkaClient
@@ -213,9 +242,12 @@ func (s *rpcEventsCollector) configure(ctx context.Context, addresses []common.A
 	s.httpLogsClient = logsHTTPClient
 
 	s.addresses = map[common.Address]any{}
+
+	fmt.Println("Creating addresses map...")
 	for _, address := range addresses {
 		s.addresses[address] = new(any)
 	}
+	fmt.Println("Configuration done.")
 	return nil
 }
 

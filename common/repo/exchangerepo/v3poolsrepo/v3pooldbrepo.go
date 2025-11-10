@@ -13,6 +13,7 @@ type V3PoolDBRepo interface {
 	GetPoolByPoolIdentificator(poolIdentificator models.V3PoolIdentificator) (models.UniswapV3Pool, error)
 
 	GetPools() ([]models.UniswapV3Pool, error)
+	DeletePoolsByChain(chainID uint) error
 	GetPoolsByChainID(chainID uint) ([]models.UniswapV3Pool, error)
 	GetPoolsByChainIDOrdered(chainID uint) ([]models.UniswapV3Pool, error)
 	GetPoolsByChainIDWith0BlockNumberOrdered(chainID uint) ([]models.UniswapV3Pool, error)
@@ -54,6 +55,27 @@ func NewDBRepo(dependenices V3PoolDBRepoDependencies) (V3PoolDBRepo, error) {
 	return &v3poolDBRepo{
 		pgDatabase: dependenices.Database,
 	}, nil
+}
+
+func (r *v3poolDBRepo) DeletePoolsByChain(chainID uint) error {
+	db, err := r.pgDatabase.GetDB()
+	if err != nil {
+		return err
+	}
+
+	query := psql.
+		Delete(models.UNISWAP_V3_POOL_TABLE).
+		Where(sq.Eq{models.UNISWAP_V3_POOL_CHAINID: chainID})
+
+	_, err = query.
+		RunWith(db).Exec()
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+
 }
 
 func (r *v3poolDBRepo) GetPoolByPoolIdentificator(poolIdentificator models.V3PoolIdentificator) (models.UniswapV3Pool, error) {

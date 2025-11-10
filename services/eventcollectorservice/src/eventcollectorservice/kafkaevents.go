@@ -23,6 +23,7 @@ type poolEvent struct {
 	BlockNumber uint64      `json:"block_number"`
 	Address     string      `json:"address"`
 	TxHash      string      `json:"tx_hash"`
+	TxTimestamp uint64      `json:"tx_timestamp"`
 }
 
 type kafkaClientConfig struct {

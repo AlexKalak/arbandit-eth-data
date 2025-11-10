@@ -21,6 +21,7 @@ type poolEventMetaData struct {
 	BlockNumber uint64 `json:"block_number"`
 	Address     string `json:"address"`
 	TxHash      string `json:"tx_hash"`
+	TxTimestamp uint64 `json:"tx_timestamp"`
 }
 
 type swapEventData struct {
@@ -92,7 +93,7 @@ func (s *poolUpdaterService) Start(ctx context.Context) error {
 			continue
 		}
 
-		// chanel <- &m
+		chanel <- &m
 	}
 }
 
@@ -289,6 +290,7 @@ func (s *poolUpdaterService) handleSwapEventForCache(metaData poolEventMetaData,
 
 	v3Tx := models.V3Transaction{
 		TxHash:                metaData.TxHash,
+		TxTimestamp:           metaData.TxTimestamp,
 		PoolAddress:           metaData.Address,
 		ChainID:               s.config.ChainID,
 		BlockNumber:           metaData.BlockNumber,
@@ -297,6 +299,7 @@ func (s *poolUpdaterService) handleSwapEventForCache(metaData poolEventMetaData,
 		ArchiveToken0USDPrice: token0.USDPrice,
 		ArchiveToken1USDPrice: token1.USDPrice,
 	}
+
 	return s.v3TransactionCacheRepo.StreamTransaction(v3Tx)
 	return nil
 }
@@ -441,6 +444,7 @@ func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *ka
 
 	v3Tx := models.V3Transaction{
 		TxHash:                metaData.TxHash,
+		TxTimestamp:           metaData.TxTimestamp,
 		PoolAddress:           metaData.Address,
 		ChainID:               s.config.ChainID,
 		BlockNumber:           metaData.BlockNumber,
@@ -449,6 +453,7 @@ func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *ka
 		ArchiveToken0USDPrice: token0.USDPrice,
 		ArchiveToken1USDPrice: token1.USDPrice,
 	}
+	fmt.Println("TXTIMESTAMP: ", v3Tx.TxTimestamp)
 
 	err = s.v3TransactionDBRepo.CreateTransaction(&v3Tx)
 	if err != nil {
