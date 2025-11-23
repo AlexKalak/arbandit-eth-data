@@ -5,23 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
-	"time"
 
 	"github.com/alexkalak/go_market_analyze/common/core/exchangables/v3poolexchangable"
 	"github.com/alexkalak/go_market_analyze/common/helpers"
 	"github.com/alexkalak/go_market_analyze/common/models"
+	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v3poolsrepo"
+	"github.com/alexkalak/go_market_analyze/common/repo/tokenrepo"
+	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v3transactionrepo"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/segmentio/kafka-go"
 )
-
-type poolEventMetaData struct {
-	Type        string `json:"type"`
-	BlockNumber uint64 `json:"block_number"`
-	Address     string `json:"address"`
-	TxHash      string `json:"tx_hash"`
-	TxTimestamp uint64 `json:"tx_timestamp"`
-}
 
 type swapEventData struct {
 	Sender       common.Address `json:"sender"`
@@ -56,94 +51,127 @@ type poolEventData[T swapEventData | mintEventData | burnEventData] struct {
 	Data T `json:"data"`
 }
 
-func (s *poolUpdaterService) Start(ctx context.Context) error {
-	chanel := make(chan *kafka.Message, 1024)
-	go s.startPostgresUpdater(ctx, chanel)
+type poolUpdaterDependencies struct {
+	tokenDBRepo tokenrepo.TokenRepo
 
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{s.config.KafkaServer},
-		Topic:   s.config.KafkaUpdateV3PoolsTopic,
-		GroupID: "ssanina2281337",
-	})
-
-	defer reader.Close()
-
-	lastTimeLogged := time.Now()
-	msgCount := 0
-
-	fmt.Println("🚀 Listening for messages...")
-	for {
-		m, err := reader.ReadMessage(ctx)
-		if err != nil {
-			fmt.Println("failed to read message:", err)
-			continue
-		}
-
-		msgCount += 1
-		if time.Since(lastTimeLogged) > time.Second {
-			fmt.Println(msgCount, "messages")
-			msgCount = 0
-			lastTimeLogged = time.Now()
-		}
-
-		err = s.handlePoolEventMessageForCache(&m)
-		if err != nil {
-			continue
-		}
-
-		chanel <- &m
-	}
+	V3PoolDBRepo           v3poolsrepo.V3PoolDBRepo
+	V3PoolCacheRepo        v3poolsrepo.V3PoolCacheRepo
+	V3TransactionDBRepo    v3transactionrepo.V3TransactionDBRepo
+	V3TransactionCacheRepo v3transactionrepo.V3TransactionCacheRepo
 }
 
-func (s *poolUpdaterService) handlePoolEventMessageForCache(m *kafka.Message) error {
-	// fmt.Println("handling message in cache")
+type poolUpdater struct {
+	updatedTokensSet  map[string]any
+	tokensMapForCache map[models.TokenIdentificator]*models.Token
+	tokensMapForDB    map[models.TokenIdentificator]*models.Token
+	tokenDBRepo       tokenrepo.TokenRepo
+
+	v3PoolDBRepo           v3poolsrepo.V3PoolDBRepo
+	v3PoolCacheRepo        v3poolsrepo.V3PoolCacheRepo
+	v3TransactionDBRepo    v3transactionrepo.V3TransactionDBRepo
+	v3TransactionCacheRepo v3transactionrepo.V3TransactionCacheRepo
+
+	chainID                 uint
+	currentBlockPoolChanges map[models.V3PoolIdentificator]models.UniswapV3Pool
+}
+
+func newPoolUpdater(chainID uint, tokensMapForCache, tokensMapForDB map[models.TokenIdentificator]*models.Token, updatedTokensSet map[string]any, dependencies poolUpdaterDependencies) (poolUpdater, error) {
+	pools, err := dependencies.V3PoolDBRepo.GetPoolsByChainID(chainID)
+	if err != nil {
+		return poolUpdater{}, err
+	}
+
+	var maxBlockNumber int64 = math.MinInt64
+
+	for _, pool := range pools {
+		if int64(pool.BlockNumber) > maxBlockNumber {
+			maxBlockNumber = int64(pool.BlockNumber)
+		}
+	}
+
+	if maxBlockNumber == math.MinInt64 {
+		return poolUpdater{}, errors.New("unable to define block_number for pools")
+	}
+
+	err = dependencies.V3PoolCacheRepo.ClearPools(chainID)
+	if err != nil {
+		return poolUpdater{}, err
+	}
+
+	err = dependencies.V3PoolCacheRepo.SetBlockNumber(chainID, uint64(maxBlockNumber))
+	if err != nil {
+		return poolUpdater{}, err
+	}
+
+	if len(pools) > 0 {
+		err = dependencies.V3PoolCacheRepo.SetPools(chainID, pools)
+		if err != nil {
+			return poolUpdater{}, err
+		}
+
+	}
+
+	return poolUpdater{
+		updatedTokensSet: updatedTokensSet,
+
+		tokensMapForDB:    tokensMapForDB,
+		tokensMapForCache: tokensMapForCache,
+		tokenDBRepo:       dependencies.tokenDBRepo,
+
+		v3PoolDBRepo:           dependencies.V3PoolDBRepo,
+		v3PoolCacheRepo:        dependencies.V3PoolCacheRepo,
+		v3TransactionDBRepo:    dependencies.V3TransactionDBRepo,
+		v3TransactionCacheRepo: dependencies.V3TransactionCacheRepo,
+
+		chainID:                 chainID,
+		currentBlockPoolChanges: map[models.V3PoolIdentificator]models.UniswapV3Pool{},
+	}, nil
+}
+
+func (s *poolUpdater) onBlockOver(m *kafka.Message, blockNumber uint64) error {
+	metaData := eventMetaData{}
+	if err := json.Unmarshal(m.Value, &metaData); err != nil {
+		return err
+	}
+
+	pools := make([]models.UniswapV3Pool, 0, len(s.currentBlockPoolChanges))
+	for _, pool := range s.currentBlockPoolChanges {
+		pool.BlockNumber = int(metaData.BlockNumber)
+		pools = append(pools, pool)
+	}
+
+	for vpi := range s.currentBlockPoolChanges {
+		delete(s.currentBlockPoolChanges, vpi)
+	}
+
+	err := s.v3PoolCacheRepo.SetPools(s.chainID, pools)
+	if err != nil {
+		return err
+	}
+	err = s.v3PoolCacheRepo.SetBlockNumber(s.chainID, blockNumber)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *poolUpdater) handlePoolEventMessageForCache(m *kafka.Message) error {
 	if m == nil {
 		return errors.New("nil message")
 	}
 
-	metaData := poolEventMetaData{}
+	metaData := eventMetaData{}
 	if err := json.Unmarshal(m.Value, &metaData); err != nil {
 		return err
 	}
-	fmt.Println(metaData.Type)
-
-	if metaData.Type == "BlockOver" {
-		// fmt.Println("BLOCK OVER: ", metaData.BlockNumber)
-		// fmt.Println(s.currentCheckingBlock, metaData.BlockNumber)
-
-		if s.currentCheckingBlock == metaData.BlockNumber {
-			pools := make([]models.UniswapV3Pool, 0, len(s.currentBlockPoolChanges))
-
-			for _, pool := range s.currentBlockPoolChanges {
-				pool.BlockNumber = int(metaData.BlockNumber)
-				pools = append(pools, pool)
-			}
-
-			for vpi := range s.currentBlockPoolChanges {
-				delete(s.currentBlockPoolChanges, vpi)
-			}
-
-			err := s.v3PoolCacheRepo.SetPools(s.config.ChainID, pools)
-			if err != nil {
-				return err
-			}
-			err = s.v3PoolCacheRepo.SetBlockNumber(s.config.ChainID, s.currentCheckingBlock)
-			if err != nil {
-				return err
-			}
-		}
-
-		return nil
-	}
-
-	s.currentCheckingBlock = metaData.BlockNumber
 
 	switch metaData.Type {
-	case "Swap":
+	case "SwapV3":
 		s.handleSwapEventForCache(metaData, m)
-	case "Mint":
+	case "MintV3":
 		s.handleMintEventForCache(metaData, m)
-	case "Burn":
+	case "BurnV3":
 		s.handleBurnEventForCache(metaData, m)
 	default:
 		// return errors.New("message type not found")
@@ -152,8 +180,8 @@ func (s *poolUpdaterService) handlePoolEventMessageForCache(m *kafka.Message) er
 	return nil
 }
 
-func (s *poolUpdaterService) handleSwapEventForCache(metaData poolEventMetaData, m *kafka.Message) error {
-	fmt.Println("Swap for cache", metaData.Address)
+func (s *poolUpdater) handleSwapEventForCache(metaData eventMetaData, m *kafka.Message) error {
+	fmt.Println("Swap for cache", helpers.GetJSONString(metaData))
 	data := poolEventData[swapEventData]{}
 	if err := json.Unmarshal(m.Value, &data); err != nil {
 		return err
@@ -161,7 +189,7 @@ func (s *poolUpdaterService) handleSwapEventForCache(metaData poolEventMetaData,
 
 	poolIdentificator := models.V3PoolIdentificator{
 		Address: metaData.Address,
-		ChainID: s.config.ChainID,
+		ChainID: s.chainID,
 	}
 
 	pool := models.UniswapV3Pool{}
@@ -176,8 +204,8 @@ func (s *poolUpdaterService) handleSwapEventForCache(metaData poolEventMetaData,
 		}
 	}
 
-	token0, ok0 := s.tokensMapForCache[models.TokenIdentificator{Address: pool.Token0, ChainID: s.config.ChainID}]
-	token1, ok1 := s.tokensMapForCache[models.TokenIdentificator{Address: pool.Token1, ChainID: s.config.ChainID}]
+	token0, ok0 := s.tokensMapForCache[models.TokenIdentificator{Address: pool.Token0, ChainID: s.chainID}]
+	token1, ok1 := s.tokensMapForCache[models.TokenIdentificator{Address: pool.Token1, ChainID: s.chainID}]
 	if !ok0 || !ok1 {
 		return errors.New("pool tokens not found")
 	}
@@ -192,13 +220,16 @@ func (s *poolUpdaterService) handleSwapEventForCache(metaData poolEventMetaData,
 		return err
 	}
 
+	s.updatedTokensSet[token0.Address] = new(any)
+	s.updatedTokensSet[token1.Address] = new(any)
+
 	s.currentBlockPoolChanges[poolIdentificator] = pool
 
 	v3Swap := models.V3Swap{
 		TxHash:                metaData.TxHash,
 		TxTimestamp:           metaData.TxTimestamp,
 		PoolAddress:           metaData.Address,
-		ChainID:               s.config.ChainID,
+		ChainID:               s.chainID,
 		BlockNumber:           metaData.BlockNumber,
 		Amount0:               data.Data.Amount0,
 		Amount1:               data.Data.Amount1,
@@ -210,7 +241,7 @@ func (s *poolUpdaterService) handleSwapEventForCache(metaData poolEventMetaData,
 
 }
 
-func (s *poolUpdaterService) handleMintEventForCache(metaData poolEventMetaData, m *kafka.Message) error {
+func (s *poolUpdater) handleMintEventForCache(metaData eventMetaData, m *kafka.Message) error {
 	fmt.Println("Mint evet")
 	data := poolEventData[mintEventData]{}
 	if err := json.Unmarshal(m.Value, &data); err != nil {
@@ -219,7 +250,7 @@ func (s *poolUpdaterService) handleMintEventForCache(metaData poolEventMetaData,
 
 	poolIdentificator := models.V3PoolIdentificator{
 		Address: metaData.Address,
-		ChainID: s.config.ChainID,
+		ChainID: s.chainID,
 	}
 
 	pool := models.UniswapV3Pool{}
@@ -238,12 +269,15 @@ func (s *poolUpdaterService) handleMintEventForCache(metaData poolEventMetaData,
 		return err
 	}
 
+	s.updatedTokensSet[pool.Token0] = new(any)
+	s.updatedTokensSet[pool.Token1] = new(any)
+
 	s.currentBlockPoolChanges[poolIdentificator] = pool
 
 	return err
 }
 
-func (s *poolUpdaterService) handleBurnEventForCache(metaData poolEventMetaData, m *kafka.Message) error {
+func (s *poolUpdater) handleBurnEventForCache(metaData eventMetaData, m *kafka.Message) error {
 	fmt.Println("Burn evet")
 	data := poolEventData[mintEventData]{}
 	if err := json.Unmarshal(m.Value, &data); err != nil {
@@ -252,7 +286,7 @@ func (s *poolUpdaterService) handleBurnEventForCache(metaData poolEventMetaData,
 
 	poolIdentificator := models.V3PoolIdentificator{
 		Address: metaData.Address,
-		ChainID: s.config.ChainID,
+		ChainID: s.chainID,
 	}
 
 	pool := models.UniswapV3Pool{}
@@ -271,32 +305,24 @@ func (s *poolUpdaterService) handleBurnEventForCache(metaData poolEventMetaData,
 		return err
 	}
 
+	s.updatedTokensSet[pool.Token0] = new(any)
+	s.updatedTokensSet[pool.Token1] = new(any)
+
 	s.currentBlockPoolChanges[poolIdentificator] = pool
 
 	return err
 }
 
-func (s *poolUpdaterService) updateImpactsForCache(pool *models.UniswapV3Pool, token0, token1 *models.Token) error {
-	updatedImpact, err := s.updateTokensImpactsForV3Swap(pool, token0, token1)
+func (s *poolUpdater) updateImpactsForCache(pool *models.UniswapV3Pool, token0, token1 *models.Token) error {
+	_, err := s.updateTokensImpactsForV3Swap(pool, token0, token1)
 	if err != nil {
 		return err
-	}
-
-	if updatedImpact != nil {
-		switch updatedImpact.TokenAddress {
-		case token0.Address:
-			// fmt.Println("Updated cache impact for token0: ", token0.Symbol)
-			s.tokenCacheRepo.SetToken(token0)
-		case token1.Address:
-			// fmt.Println("Updated cache impact for token1: ", token1.Symbol)
-			s.tokenCacheRepo.SetToken(token1)
-		}
 	}
 
 	return err
 }
 
-func (s *poolUpdaterService) updatePoolForSwapEvent(pool *models.UniswapV3Pool, data poolEventData[swapEventData], token0 *models.Token, token1 *models.Token) error {
+func (s *poolUpdater) updatePoolForSwapEvent(pool *models.UniswapV3Pool, data poolEventData[swapEventData], token0 *models.Token, token1 *models.Token) error {
 	newTick := int(data.Data.Tick.Int64())
 	pool.Tick = newTick
 	if pool.Tick < pool.TickLower || pool.Tick > pool.TickUpper {
@@ -319,7 +345,7 @@ func (s *poolUpdaterService) updatePoolForSwapEvent(pool *models.UniswapV3Pool, 
 	return nil
 }
 
-func (s *poolUpdaterService) handleTicksForMintBurn(pool *models.UniswapV3Pool, tickLower, tickUpper int, amount *big.Int) error {
+func (s *poolUpdater) handleTicksForMintBurn(pool *models.UniswapV3Pool, tickLower, tickUpper int, amount *big.Int) error {
 	positionLowerTick := models.UniswapV3PoolTick{
 		TickIdx:      tickLower,
 		LiquidityNet: amount,
@@ -343,7 +369,7 @@ func (s *poolUpdaterService) handleTicksForMintBurn(pool *models.UniswapV3Pool, 
 	return nil
 }
 
-func (s *poolUpdaterService) addNewTicksForPool(pool *models.UniswapV3Pool, newTicks []models.UniswapV3PoolTick) {
+func (s *poolUpdater) addNewTicksForPool(pool *models.UniswapV3Pool, newTicks []models.UniswapV3PoolTick) {
 	initializedTicks := pool.GetTicks()
 	updatedInitializedTicks := []models.UniswapV3PoolTick{}
 
@@ -383,7 +409,7 @@ func (s *poolUpdaterService) addNewTicksForPool(pool *models.UniswapV3Pool, newT
 
 ////DATABASE HANDLING
 
-func (s *poolUpdaterService) startPostgresUpdater(ctx context.Context, chanel <-chan *kafka.Message) error {
+func (s *poolUpdater) startPostgresUpdater(ctx context.Context, chanel <-chan *kafka.Message) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -400,25 +426,25 @@ func (s *poolUpdaterService) startPostgresUpdater(ctx context.Context, chanel <-
 
 }
 
-func (s *poolUpdaterService) handlePoolEventMessageForPostgres(m *kafka.Message) error {
-	fmt.Println("handling postgres message")
+func (s *poolUpdater) handlePoolEventMessageForPostgres(m *kafka.Message) error {
+	// fmt.Println("handling postgres message")
 	if m == nil {
 		return errors.New("nil message")
 	}
 
-	metaData := poolEventMetaData{}
+	metaData := eventMetaData{}
 	if err := json.Unmarshal(m.Value, &metaData); err != nil {
 		return err
 	}
 
 	switch metaData.Type {
-	case "Swap":
+	case "SwapV3":
 		return s.handleSwapEventDB(metaData, m)
 
-	case "Mint":
+	case "MintV3":
 		return s.handleMintEventDB(metaData, m)
 
-	case "Burn":
+	case "BurnV3":
 		return s.handleBurnEventDB(metaData, m)
 
 	default:
@@ -426,7 +452,7 @@ func (s *poolUpdaterService) handlePoolEventMessageForPostgres(m *kafka.Message)
 	}
 }
 
-func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *kafka.Message) error {
+func (s *poolUpdater) handleSwapEventDB(metaData eventMetaData, m *kafka.Message) error {
 	data := poolEventData[swapEventData]{}
 	if err := json.Unmarshal(m.Value, &data); err != nil {
 		return err
@@ -434,7 +460,7 @@ func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *ka
 
 	poolIdentificator := models.V3PoolIdentificator{
 		Address: metaData.Address,
-		ChainID: s.config.ChainID,
+		ChainID: s.chainID,
 	}
 
 	pool, err := s.v3PoolDBRepo.GetPoolByPoolIdentificator(poolIdentificator)
@@ -442,8 +468,8 @@ func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *ka
 		return err
 	}
 
-	token0, ok0 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token0, ChainID: s.config.ChainID}]
-	token1, ok1 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token1, ChainID: s.config.ChainID}]
+	token0, ok0 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token0, ChainID: s.chainID}]
+	token1, ok1 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token1, ChainID: s.chainID}]
 
 	if !ok0 || !ok1 {
 		return errors.New("pool tokens not found")
@@ -475,7 +501,7 @@ func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *ka
 		TxHash:                metaData.TxHash,
 		TxTimestamp:           metaData.TxTimestamp,
 		PoolAddress:           metaData.Address,
-		ChainID:               s.config.ChainID,
+		ChainID:               s.chainID,
 		BlockNumber:           metaData.BlockNumber,
 		Amount0:               data.Data.Amount0,
 		Amount1:               data.Data.Amount1,
@@ -484,7 +510,7 @@ func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *ka
 	}
 	fmt.Println("TXTIMESTAMP: ", v3Swap.TxTimestamp)
 
-	err = s.v3TransactionDBRepo.CreateSwap(&v3Swap)
+	err = s.v3TransactionDBRepo.CreateV3Swap(&v3Swap)
 	if err != nil {
 		fmt.Println("error creating tx:", err)
 		return err
@@ -493,7 +519,7 @@ func (s *poolUpdaterService) handleSwapEventDB(metaData poolEventMetaData, m *ka
 	return nil
 }
 
-func (s *poolUpdaterService) updateImpactsForDB(pool *models.UniswapV3Pool, token0, token1 *models.Token) error {
+func (s *poolUpdater) updateImpactsForDB(pool *models.UniswapV3Pool, token0, token1 *models.Token) error {
 	updatedImpact, err := s.updateTokensImpactsForV3Swap(pool, token0, token1)
 	if err != nil {
 		return err
@@ -516,7 +542,7 @@ func (s *poolUpdaterService) updateImpactsForDB(pool *models.UniswapV3Pool, toke
 	return err
 }
 
-func (s *poolUpdaterService) handleMintEventDB(metaData poolEventMetaData, m *kafka.Message) error {
+func (s *poolUpdater) handleMintEventDB(metaData eventMetaData, m *kafka.Message) error {
 	data := poolEventData[mintEventData]{}
 	if err := json.Unmarshal(m.Value, &data); err != nil {
 		return err
@@ -526,7 +552,7 @@ func (s *poolUpdaterService) handleMintEventDB(metaData poolEventMetaData, m *ka
 
 	poolIdentificator := models.V3PoolIdentificator{
 		Address: metaData.Address,
-		ChainID: s.config.ChainID,
+		ChainID: s.chainID,
 	}
 
 	pool, err := s.v3PoolDBRepo.GetPoolByPoolIdentificator(poolIdentificator)
@@ -555,7 +581,7 @@ func (s *poolUpdaterService) handleMintEventDB(metaData poolEventMetaData, m *ka
 	return nil
 }
 
-func (s *poolUpdaterService) handleBurnEventDB(metaData poolEventMetaData, m *kafka.Message) error {
+func (s *poolUpdater) handleBurnEventDB(metaData eventMetaData, m *kafka.Message) error {
 	fmt.Println("DB Burn")
 
 	data := poolEventData[burnEventData]{}
@@ -565,7 +591,7 @@ func (s *poolUpdaterService) handleBurnEventDB(metaData poolEventMetaData, m *ka
 
 	poolIdentificator := models.V3PoolIdentificator{
 		Address: metaData.Address,
-		ChainID: s.config.ChainID,
+		ChainID: s.chainID,
 	}
 
 	pool, err := s.v3PoolDBRepo.GetPoolByPoolIdentificator(poolIdentificator)
@@ -594,9 +620,9 @@ func (s *poolUpdaterService) handleBurnEventDB(metaData poolEventMetaData, m *ka
 	return nil
 }
 
-func (s *poolUpdaterService) updatePoolRates(pool *models.UniswapV3Pool) error {
-	token0, ok0 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token0, ChainID: s.config.ChainID}]
-	token1, ok1 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token1, ChainID: s.config.ChainID}]
+func (s *poolUpdater) updatePoolRates(pool *models.UniswapV3Pool) error {
+	token0, ok0 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token0, ChainID: s.chainID}]
+	token1, ok1 := s.tokensMapForDB[models.TokenIdentificator{Address: pool.Token1, ChainID: s.chainID}]
 	if !ok0 || !ok1 {
 		return errors.New("pool tokens not found")
 	}
@@ -610,7 +636,7 @@ func (s *poolUpdaterService) updatePoolRates(pool *models.UniswapV3Pool) error {
 	return nil
 }
 
-func (s *poolUpdaterService) updateTokensImpactsForV3Swap(pool *models.UniswapV3Pool, token0, token1 *models.Token) (*models.TokenPriceImpact, error) {
+func (s *poolUpdater) updateTokensImpactsForV3Swap(pool *models.UniswapV3Pool, token0, token1 *models.Token) (*models.TokenPriceImpact, error) {
 	var token0CurrentPoolImpact *models.TokenPriceImpact = nil
 	for _, imp := range token0.GetImpacts() {
 		if imp.ChainID == pool.ChainID &&

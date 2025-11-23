@@ -5,8 +5,10 @@ import (
 
 	"github.com/alexkalak/go_market_analyze/common/helpers/envhelper"
 	"github.com/alexkalak/go_market_analyze/common/periphery/pgdatabase"
+	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v2pairsrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v3poolsrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/tokenrepo"
+	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v2transactionrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v3transactionrepo"
 	poolupdaterservice "github.com/alexkalak/go_market_analyze/services/poolupdaterservice/src"
 )
@@ -60,6 +62,19 @@ func main() {
 		panic(err)
 	}
 
+	v2PairDBRepo, err := v2pairsrepo.NewDBRepo(v2pairsrepo.V2PairDBRepoDependencies{
+		Database: pgDB,
+	})
+	if err != nil {
+		panic(err)
+	}
+	v2PairCacheRepo, err := v2pairsrepo.NewCacheRepo(context.Background(), v2pairsrepo.V2PairCacheRepoConfig{
+		RedisServer: env.REDIS_SERVER,
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	v3TransactionDBRepo, err := v3transactionrepo.NewDBRepo(v3transactionrepo.V3TransactionDBRepoDependencies{
 		Database: pgDB,
 	})
@@ -74,16 +89,35 @@ func main() {
 		panic(err)
 	}
 
-	poolUpdaterServiceConfig := poolupdaterservice.PoolUpdaterServiceConfig{
+	v2TransactionDBRepo, err := v2transactionrepo.NewDBRepo(v2transactionrepo.V2TransactionDBRepoDependencies{
+		Database: pgDB,
+	})
+	if err != nil {
+		panic(err)
+	}
+	v2TransactionCacheRepo, err := v2transactionrepo.NewCacheRepo(context.Background(), v2transactionrepo.V2TransacationCacheRepoConfig{
+		RedisServer: env.REDIS_SERVER,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	poolUpdaterServiceConfig := poolupdaterservice.StateUpdaterServiceConfig{
 		ChainID:                 chainID,
 		KafkaServer:             env.KAFKA_SERVER,
 		KafkaUpdateV3PoolsTopic: env.KAFKA_UPDATE_V3_POOLS_TOPIC,
 	}
-	poolUpdaterServiceDependencies := poolupdaterservice.PoolUpdaterServiceDependencies{
-		TokenDBRepo:            tokenRepo,
-		TokenCacheRepo:         tokenCacheRepo,
-		V3PoolDBRepo:           v3PoolsDBRepo,
-		V3PoolCacheRepo:        v3PoolsCacheRepo,
+	poolUpdaterServiceDependencies := poolupdaterservice.StateUpdaterServiceDependencies{
+		TokenDBRepo:    tokenRepo,
+		TokenCacheRepo: tokenCacheRepo,
+
+		V2PairDBRepo:    v2PairDBRepo,
+		V2PairCacheRepo: v2PairCacheRepo,
+		V3PoolDBRepo:    v3PoolsDBRepo,
+		V3PoolCacheRepo: v3PoolsCacheRepo,
+
+		V2TransactionDBRepo:    v2TransactionDBRepo,
+		V2TransactionCacheRepo: v2TransactionCacheRepo,
 		V3TransactionDBRepo:    v3TransactionDBRepo,
 		V3TransactionCacheRepo: v3TransactionCacheRepo,
 	}

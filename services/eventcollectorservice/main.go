@@ -52,11 +52,18 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	pairs, err := v2PairDBRepo.GetPairsByChainID(chainID)
+	if err != nil {
+		panic(err)
+	}
 
-	poolAddresses := []common.Address{}
+	exchangeAddresses := make([]common.Address, 0, len(pools)+len(pairs))
 
 	for _, pool := range pools {
-		poolAddresses = append(poolAddresses, common.HexToAddress(pool.Address))
+		exchangeAddresses = append(exchangeAddresses, common.HexToAddress(pool.Address))
+	}
+	for _, pair := range pairs {
+		exchangeAddresses = append(exchangeAddresses, common.HexToAddress(pair.Address))
 	}
 
 	// poolAddresses = poolAddresses[:100]
@@ -110,7 +117,7 @@ func main() {
 		panic(err)
 	}
 
-	err = eventCollectorService.StartFromBlockV3(context.Background(), poolAddresses)
+	err = eventCollectorService.StartFromBlock(context.Background(), exchangeAddresses)
 	if err != nil {
 		panic(err)
 	}

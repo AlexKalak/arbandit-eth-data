@@ -32,6 +32,26 @@ type Arbitrage struct {
 	Amounts   []*big.Int
 }
 
+func (a *Arbitrage) CountRealAmounts() error {
+	currentAmount := a.Amounts[0]
+	realAmounts := []*big.Int{new(big.Int).Set(currentAmount)}
+	var err error
+	fmt.Println(a.Hops[0])
+	for _, edge := range a.UsedEdges {
+		currentAmount, err = edge.Exchangable.ImitateSwap(currentAmount, edge.Zfo)
+		if err != nil {
+			return err
+		}
+		fmt.Println(currentAmount)
+		realAmounts = append(realAmounts, new(big.Int).Set(currentAmount))
+	}
+	fmt.Println(a.Hops[len(a.Hops)-1])
+
+	a.Amounts = realAmounts
+
+	return nil
+}
+
 type exchangesGraph struct {
 	mu                 sync.Mutex
 	arbitrages         []Arbitrage
@@ -270,11 +290,17 @@ func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount 
 					g.mu.Lock()
 					totalCount++
 
-					g.arbitrages = append(g.arbitrages, Arbitrage{
+					arb := Arbitrage{
 						Hops:      updatedHops,
 						UsedEdges: usedEdgesUpdated,
 						Amounts:   updatedAmounts,
-					})
+					}
+					err := arb.CountRealAmounts()
+					if err != nil {
+						continue
+					}
+
+					g.arbitrages = append(g.arbitrages, arb)
 
 					g.mu.Unlock()
 				}

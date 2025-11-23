@@ -10,13 +10,12 @@ import (
 	"time"
 
 	"github.com/alexkalak/go_market_analyze/common/helpers"
-	"github.com/alexkalak/go_market_analyze/services/eventcollectorservice/src/eventcollectorerrors"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []common.Address) error {
+func (s *rpcEventsCollector) StartFromBlock(ctx context.Context, addresses []common.Address) error {
 	fmt.Println("Configuring RpcSyncService...")
 	err := s.configure(ctx, addresses)
 	if err != nil {
@@ -25,32 +24,11 @@ func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []c
 	}
 	defer s.wsLogsClient.Close()
 
-	uniswapABI, ok := s.abis[_UNISWAP_V3_ABI_NAME]
-	if !ok {
-		return errors.New("abi not found")
-	}
-	pancakeswapABI, ok := s.abis[_PANCAKESWAP_V3_ABI_NAME]
-	if !ok {
-		return errors.New("abi not found")
-	}
-	sushiswapABI, ok := s.abis[_SUSHISWAP_V3_ABI_NAME]
-	if !ok {
-		return errors.New("abi not found")
-	}
-
 	query := ethereum.FilterQuery{
 		Addresses: addresses,
-		Topics: [][]common.Hash{{
-			uniswapABI.SwapV3Sig,
-			uniswapABI.MintV3Sig,
-			uniswapABI.BurnV3Sig,
-			pancakeswapABI.SwapV3Sig,
-			pancakeswapABI.MintV3Sig,
-			pancakeswapABI.BurnV3Sig,
-			sushiswapABI.SwapV3Sig,
-			sushiswapABI.MintV3Sig,
-			sushiswapABI.BurnV3Sig,
-		}},
+		Topics: [][]common.Hash{
+			s.eventHandler.sigs,
+		},
 	}
 
 	headCh := make(chan *types.Header, 1024)
@@ -74,28 +52,32 @@ func (s *rpcEventsCollector) StartFromBlockV3(ctx context.Context, addresses []c
 	if err != nil {
 		fmt.Println("Error getting last block header: ", err)
 		time.Sleep(3 * time.Second)
-		return s.StartFromBlockV3(ctx, addresses)
+		return s.StartFromBlock(ctx, addresses)
 	}
 
-	if currentHead.Number.Uint64()-s.lastCheckedBlock > 400 {
-		err := s.mergeFromBlock(ctx, s.config.ChainID, currentHead.Number)
-		if err != nil {
-			return err
-		}
-		s.setLastCheckedBlock(currentHead.Number.Uint64())
-	} else {
-		lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, big.NewInt(int64(s.lastCheckedBlock+1)), currentHead.Number)
-		if err != nil {
-			return err
-		}
-		s.setLastCheckedBlock(lastSentBlock)
-	}
+	// if currentHead.Number.Uint64()-s.lastCheckedBlock > 30 {
+	// err := s.mergeFromBlock(ctx, s.config.ChainID, currentHead.Number)
+	// if err != nil {
+	// 	return err
+	// }
+	// s.setLastCheckedBlock(currentHead.Number.Uint64())
+	// } else {
+	// 	lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, big.NewInt(int64(s.lastCheckedBlock+1)), currentHead.Number)
+	// 	if err != nil {
+	// 		if strings.Contains(err.Error(), "invalid params") {
+	// 			time.Sleep(3 * time.Second)
+	// 			s.StartFromBlock(ctx, addresses)
+	// 		}
+	// 		return err
+	// 	}
+	// 	s.setLastCheckedBlock(lastSentBlock)
+	// }
 
 	fmt.Println("Got head: ", currentHead)
 	fmt.Println("END PRELOADING, PRODUCING NEW MESSAGES")
 	err = s.ListenNewLogs(ctx, sub, subHead, s.lastCheckedBlock, logsCh, headCh)
 	if err != nil {
-		s.StartFromBlockV3(ctx, addresses)
+		s.StartFromBlock(ctx, addresses)
 	}
 
 	return nil
@@ -126,6 +108,30 @@ func (s *rpcEventsCollector) mergeFromBlock(ctx context.Context, chainID uint, b
 		return err
 	}
 	fmt.Println("Merging pools data done.")
+
+	fmt.Println("Merging pairs...")
+	err = s.merger.MergePairs(chainID)
+	if err != nil {
+		fmt.Println("Merging pairs error: ", err)
+		return err
+	}
+	fmt.Println("Merging pairs done.")
+
+	fmt.Println("Merging pairs data...")
+	err = s.merger.MergePairsData(ctx, chainID, blockNumber)
+	if err != nil {
+		fmt.Println("Merging pairs data error: ", err)
+		return err
+	}
+	fmt.Println("Merging pairs data done.")
+
+	fmt.Println("Validating pairs ...")
+	err = s.merger.ValidateV2PairsAndComputeAverageUSDPrice(chainID)
+	if err != nil {
+		fmt.Println("Validating pairs error: ", err)
+		return err
+	}
+	fmt.Println("Validating pairs done.")
 
 	fmt.Println("Validating pools ...")
 	err = s.merger.ValidateV3PoolsAndComputeAverageUSDPrice(chainID)
@@ -158,9 +164,7 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 
 			blockNum := head.Number.Uint64()
 
-			fmt.Println("Locking in header channel...")
 			s.headsAndLogsData.mu.Lock()
-			fmt.Println("Locked in header channel.")
 
 			s.headsAndLogsData.blockTimestamps[blockNum] = head.Time
 			fmt.Println("blockNumber", blockNum, "timestamp", head.Time)
@@ -173,9 +177,7 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 				delete(s.headsAndLogsData.pendingLogs, blockNum)
 			}
 
-			fmt.Println("Unlocking in header channel...")
 			s.headsAndLogsData.mu.Unlock()
-			fmt.Println("Unlocked in header channel.")
 
 		case lg := <-logsCh:
 			// process log (dedupe inside)
@@ -184,37 +186,27 @@ func (s *rpcEventsCollector) ListenNewLogs(ctx context.Context, sub ethereum.Sub
 				continue
 			}
 
-			fmt.Println("Locking in logs channel...")
 			s.headsAndLogsData.mu.Lock()
-			fmt.Println("Locked in logs channel.")
 
 			ts, ok := s.headsAndLogsData.blockTimestamps[lg.BlockNumber]
 			if ok {
-				fmt.Println("Unlocking in logs channel...")
 				s.headsAndLogsData.mu.Unlock()
-				fmt.Println("Unlocked in logs channel.")
 				s.processNewLog(lg, ts)
 			} else {
 				fmt.Println("Waiting for header...")
 				s.headsAndLogsData.pendingLogs[lg.BlockNumber] = append(s.headsAndLogsData.pendingLogs[lg.BlockNumber], lg)
-				fmt.Println("Unlocking in logs channel...")
 				s.headsAndLogsData.mu.Unlock()
-				fmt.Println("Unlocked in logs channel.")
 			}
 
 			logCount++
 
 		case <-s.ticker.C:
-			fmt.Println("Locking in blockOverTicker channel...")
 			s.headsAndLogsData.mu.Lock()
-			fmt.Println("Locked in blockOverTicker channel.")
 			if len(s.headsAndLogsData.pendingLogs) > 0 {
 				s.headsAndLogsData.mu.Unlock()
 				continue
 			}
-			fmt.Println("Unlocking in blockOverTicker channel...")
 			s.headsAndLogsData.mu.Unlock()
-			fmt.Println("Unlocked in blockOverTicker channel.")
 
 			if !s.lastLogTime.IsZero() && s.lastCheckedBlock < s.lastLogBlockNumber && time.Since(s.lastLogTime) > quietDelay {
 				err := s.kafkaClient.sendUpdateV3PricesEvent(poolEvent{
@@ -249,12 +241,11 @@ func (s *rpcEventsCollector) processNewLog(lg types.Log, blockTimestamp uint64) 
 		return
 	}
 
-	poolEvent, err := s.handleLog(lg)
+	poolEvent, err := s.eventHandler.Handle(lg, blockTimestamp)
 	if err != nil {
 		log.Println("handleLog err:", err)
 		return
 	}
-	poolEvent.TxTimestamp = blockTimestamp
 
 	if poolEvent.Address == "" {
 		return
@@ -279,7 +270,7 @@ func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, 
 	fmt.Println(helpers.GetJSONString(timestamps))
 
 	fmt.Println("Requesting logs.")
-	logs, err := s.requireSwapEventsFromBlock(ctx, blockNumber, headBlockNumber, 1)
+	logs, err := s.getSwapEventsFromBlock(ctx, blockNumber, headBlockNumber, 1)
 	if err != nil {
 		return 0, err
 	}
@@ -307,13 +298,12 @@ func (s *rpcEventsCollector) produceHistoryEventsFromBlock(ctx context.Context, 
 			continue
 		}
 
-		currentEvent, err := s.handleLog(lg)
+		currentEvent, err := s.eventHandler.Handle(lg, timestamp)
 		if err != nil {
 			log.Println("handleLog err:", err)
 			batchIndex--
 			continue
 		}
-		currentEvent.TxTimestamp = timestamp
 
 		eventsForBatch[batchIndex] = currentEvent
 
@@ -377,23 +367,10 @@ func (s *rpcEventsCollector) getBlocksInfo(ctx context.Context, fromBlock uint64
 	return timestamps, nil
 }
 
-func (s *rpcEventsCollector) requireSwapEventsFromBlock(ctx context.Context, blockNumber *big.Int, currentHeadBlockNumber *big.Int, chunksCount int) ([]types.Log, error) {
+func (s *rpcEventsCollector) getSwapEventsFromBlock(ctx context.Context, blockNumber *big.Int, currentHeadBlockNumber *big.Int, chunksCount int) ([]types.Log, error) {
 	fmt.Println("requiring old logs chunks:", chunksCount)
 	if chunksCount <= 0 {
 		chunksCount = 1
-	}
-
-	uniswapABI, ok := s.abis[_UNISWAP_V3_ABI_NAME]
-	if !ok {
-		return nil, errors.New("abi not found")
-	}
-	pancakeswapABI, ok := s.abis[_PANCAKESWAP_V3_ABI_NAME]
-	if !ok {
-		return nil, errors.New("abi not found")
-	}
-	sushiswapABI, ok := s.abis[_SUSHISWAP_V3_ABI_NAME]
-	if !ok {
-		return nil, errors.New("abi not found")
 	}
 
 	validLogs := make([]types.Log, 0)
@@ -409,17 +386,7 @@ func (s *rpcEventsCollector) requireSwapEventsFromBlock(ctx context.Context, blo
 					blocksByChunk,
 					big.NewInt(int64(i+1)),
 				)),
-			Topics: [][]common.Hash{{
-				uniswapABI.SwapV3Sig,
-				uniswapABI.MintV3Sig,
-				uniswapABI.BurnV3Sig,
-				pancakeswapABI.SwapV3Sig,
-				pancakeswapABI.MintV3Sig,
-				pancakeswapABI.BurnV3Sig,
-				sushiswapABI.SwapV3Sig,
-				sushiswapABI.MintV3Sig,
-				sushiswapABI.BurnV3Sig,
-			}},
+			Topics: [][]common.Hash{s.eventHandler.sigs},
 		}
 
 		ctxWithTime, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -431,12 +398,11 @@ func (s *rpcEventsCollector) requireSwapEventsFromBlock(ctx context.Context, blo
 
 		if err != nil {
 			fmt.Println("Error quering logs: ", err)
-			// if strings.Contains(err.Error(), "query exceeds max results") || strings.Contains(err.Error(), "range is over limit") {
 			time.Sleep(1)
-			return s.requireSwapEventsFromBlock(ctx, blockNumber, currentHeadBlockNumber, chunksCount*2)
-			// }
-
-			// return nil, err
+			if strings.Contains(err.Error(), "invalid params") {
+				return nil, err
+			}
+			return s.getSwapEventsFromBlock(ctx, blockNumber, currentHeadBlockNumber, chunksCount+20)
 		}
 
 		for _, log := range logs {
@@ -448,417 +414,4 @@ func (s *rpcEventsCollector) requireSwapEventsFromBlock(ctx context.Context, blo
 	}
 
 	return validLogs, nil
-}
-
-func (s *rpcEventsCollector) handleLog(lg types.Log) (poolEvent, error) {
-	uniswapAbi, ok := s.abis[_UNISWAP_V3_ABI_NAME]
-	if !ok {
-		return poolEvent{}, eventcollectorerrors.ErrAbiError
-	}
-	pancakeSwapAbi, ok := s.abis[_PANCAKESWAP_V3_ABI_NAME]
-	if !ok {
-		return poolEvent{}, eventcollectorerrors.ErrAbiError
-	}
-	sushiswapAbi, ok := s.abis[_SUSHISWAP_V3_ABI_NAME]
-	if !ok {
-		return poolEvent{}, eventcollectorerrors.ErrAbiError
-	}
-
-	if len(lg.Topics) == 0 {
-		return poolEvent{}, eventcollectorerrors.ErrNotTopicInLogs
-	}
-
-	switch lg.Topics[0] {
-	case
-		pancakeSwapAbi.SwapV3Sig,
-		pancakeSwapAbi.MintV3Sig,
-		pancakeSwapAbi.BurnV3Sig:
-		return s.handlePancakeswapV3Log(lg)
-	case
-		uniswapAbi.SwapV3Sig,
-		uniswapAbi.MintV3Sig,
-		uniswapAbi.BurnV3Sig:
-		return s.handleUniswapV3Log(lg)
-	case
-		sushiswapAbi.SwapV3Sig,
-		sushiswapAbi.MintV3Sig,
-		sushiswapAbi.BurnV3Sig:
-		return s.handleSushiswapV3Log(lg)
-	}
-
-	return poolEvent{}, nil
-}
-
-func (s *rpcEventsCollector) handlePancakeswapV3Log(lg types.Log) (poolEvent, error) {
-	abiForEvent, ok := s.abis[_PANCAKESWAP_V3_ABI_NAME]
-	if !ok {
-		return poolEvent{}, fmt.Errorf("abi with name %s not found", _UNISWAP_V3_ABI_NAME)
-	}
-
-	switch lg.Topics[0] {
-	case abiForEvent.SwapV3Sig:
-		// Has own swap event abi
-		ev, err := parsePancakeSwapV3SwapEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        SWAP_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-
-	case abiForEvent.MintV3Sig:
-		// Uses standard uniswap mint abi
-		ev, err := parseUniswapV3MintEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        MINT_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-	case abiForEvent.BurnV3Sig:
-		// Uses standard uniswap mint abi
-		ev, err := parseUniswapV3BurnEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        BURN_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-
-	default:
-		fmt.Println("Event topic not found")
-	}
-	return poolEvent{}, eventcollectorerrors.ErrLogTypeNotFound
-}
-
-func (s *rpcEventsCollector) handleSushiswapV3Log(lg types.Log) (poolEvent, error) {
-	abiForEvent, ok := s.abis[_SUSHISWAP_V3_ABI_NAME]
-	if !ok {
-		return poolEvent{}, fmt.Errorf("abi with name %s not found", _UNISWAP_V3_ABI_NAME)
-	}
-
-	switch lg.Topics[0] {
-	case abiForEvent.SwapV3Sig:
-		// Uses standard uniswap swap event abi
-		ev, err := parseUniswapV3SwapEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        SWAP_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-
-	case abiForEvent.MintV3Sig:
-		// Uses standard uniswap mint event abi
-		ev, err := parseUniswapV3MintEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        MINT_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-
-	case abiForEvent.BurnV3Sig:
-		// Uses standard uniswap burn event abi
-		ev, err := parseUniswapV3BurnEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        BURN_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-
-	default:
-		fmt.Println("Event topic not found")
-	}
-
-	return poolEvent{}, eventcollectorerrors.ErrLogTypeNotFound
-}
-
-func (s *rpcEventsCollector) handleUniswapV3Log(lg types.Log) (poolEvent, error) {
-	abiForEvent, ok := s.abis[_UNISWAP_V3_ABI_NAME]
-	if !ok {
-		return poolEvent{}, fmt.Errorf("abi with name %s not found", _UNISWAP_V3_ABI_NAME)
-	}
-
-	switch lg.Topics[0] {
-	case abiForEvent.SwapV3Sig:
-		ev, err := parseUniswapV3SwapEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        SWAP_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-	case abiForEvent.MintV3Sig:
-		ev, err := parseUniswapV3MintEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        MINT_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-	case abiForEvent.BurnV3Sig:
-		ev, err := parseUniswapV3BurnEvent(abiForEvent, lg)
-		if err != nil {
-			return poolEvent{}, err
-		}
-
-		return poolEvent{
-			Type:        BURN_KAFKA_EVENT,
-			Data:        ev,
-			BlockNumber: lg.BlockNumber,
-			Address:     strings.ToLower(lg.Address.Hex()),
-			TxHash:      lg.TxHash.Hex(),
-		}, nil
-
-	default:
-		fmt.Println("Event topic not found")
-	}
-
-	return poolEvent{}, eventcollectorerrors.ErrLogTypeNotFound
-}
-
-func parsePancakeSwapV3SwapEvent(abiForEvent v3ExchangeABI, lg types.Log) (pancakeswapV3SwapEvent, error) {
-	var ev pancakeswapV3SwapEvent
-
-	out, err := abiForEvent.ABI.Unpack("Swap", lg.Data)
-	if err != nil {
-		fmt.Println("Error unpacking Swap event", err)
-		return ev, err
-	}
-
-	Amount0, ok := out[0].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Amount1, ok := out[1].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	SqrtPriceX96, ok := out[2].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Liquidity, ok := out[3].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Tick, ok := out[4].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	ProtocolFeesToken0, ok := out[4].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	ProtocolFeesToken1, ok := out[4].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-
-	Sender := common.HexToAddress(lg.Topics[1].Hex())
-	Recipient := common.HexToAddress(lg.Topics[2].Hex())
-
-	ev.Sender = Sender
-	ev.Recipient = Recipient
-	ev.Amount0 = Amount0
-	ev.Amount1 = Amount1
-	ev.SqrtPriceX96 = SqrtPriceX96
-	ev.Liquidity = Liquidity
-	ev.Tick = Tick
-	ev.ProtocolFeesToken0 = ProtocolFeesToken0
-	ev.ProtocolFeesToken1 = ProtocolFeesToken1
-
-	return ev, nil
-}
-
-func parseUniswapV3SwapEvent(abiForEvent v3ExchangeABI, lg types.Log) (uniswapV3SwapEvent, error) {
-	var ev uniswapV3SwapEvent
-	out, err := abiForEvent.ABI.Unpack("Swap", lg.Data)
-	if err != nil {
-		fmt.Println("Error unpacking Swap event", err)
-		return ev, err
-	}
-
-	Amount0, ok := out[0].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Amount1, ok := out[1].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	SqrtPriceX96, ok := out[2].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Liquidity, ok := out[3].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Tick, ok := out[4].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Sender := common.HexToAddress(lg.Topics[1].Hex())
-	Recipient := common.HexToAddress(lg.Topics[2].Hex())
-
-	ev.Sender = Sender
-	ev.Recipient = Recipient
-	ev.Amount0 = Amount0
-	ev.Amount1 = Amount1
-	ev.SqrtPriceX96 = SqrtPriceX96
-	ev.Liquidity = Liquidity
-	ev.Tick = Tick
-
-	return ev, nil
-}
-
-func parseUniswapV3MintEvent(abiForEvent v3ExchangeABI, lg types.Log) (uniswapV3MintEvent, error) {
-	var ev uniswapV3MintEvent
-
-	out, err := abiForEvent.ABI.Unpack("Mint", lg.Data)
-	if err != nil {
-		fmt.Println("Error unpacking Mint event", err)
-		return ev, err
-	}
-
-	Sender, ok := out[0].(common.Address) // int256
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Amount, ok := out[1].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Amount0, ok := out[2].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Amount1, ok := out[3].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-
-	Owner := common.HexToAddress(lg.Topics[1].Hex())
-	TickLower := parseTickFromTopic(lg.Topics[2])
-	TickUpper := parseTickFromTopic(lg.Topics[3])
-
-	ev.Sender = Sender
-	ev.Owner = Owner
-	ev.TickLower = TickLower
-	ev.TickUpper = TickUpper
-	ev.Amount = Amount
-	ev.Amount0 = Amount0
-	ev.Amount1 = Amount1
-
-	return ev, nil
-}
-
-func parseUniswapV3BurnEvent(abiForEvent v3ExchangeABI, lg types.Log) (uniswapV3BurnEvent, error) {
-	var ev uniswapV3BurnEvent
-
-	out, err := abiForEvent.ABI.Unpack("Burn", lg.Data)
-	if err != nil {
-		fmt.Println("Error unpacking Burn event", err)
-		return ev, err
-	}
-
-	Amount, ok := out[0].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Amount0 := out[1].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-	Amount1 := out[2].(*big.Int)
-	if !ok {
-		return ev, eventcollectorerrors.ErrUnableToParseLog
-	}
-
-	Owner := common.HexToAddress(lg.Topics[1].Hex())
-	TickLower := parseTickFromTopic(lg.Topics[2])
-	TickUpper := parseTickFromTopic(lg.Topics[3])
-
-	ev.Owner = Owner
-	ev.TickLower = TickLower
-	ev.TickUpper = TickUpper
-	ev.Amount = Amount
-	ev.Amount0 = Amount0
-	ev.Amount1 = Amount1
-
-	return ev, nil
-}
-
-func printPancakeswapSwapV3Event(blockNumber uint64, txHash common.Hash, ev pancakeswapV3SwapEvent) {
-	fmt.Printf("Swap block number: %d, txHash: %s \n\t%s \n", blockNumber, txHash.String(), helpers.GetJSONString(ev))
-}
-
-func printSwapV3Event(blockNumber uint64, txHash common.Hash, ev uniswapV3SwapEvent) {
-	fmt.Printf("Swap block number: %d, txHash: %s \n\t%s \n", blockNumber, txHash.String(), helpers.GetJSONString(ev))
-}
-
-func printMintV3Event(blockNumber uint64, txHash common.Hash, ev uniswapV3MintEvent) {
-	fmt.Printf("Mint block number: %d, txHash: %s \n\t%s \n", blockNumber, txHash.String(), helpers.GetJSONString(ev))
-}
-
-func printBurnV3Event(blockNumber uint64, txHash common.Hash, ev uniswapV3BurnEvent) {
-	fmt.Printf("Burn block number: %d, txHash: %s \n\t%s \n", blockNumber, txHash.String(), helpers.GetJSONString(ev))
-}
-
-func parseTickFromTopic(topic common.Hash) int32 {
-	// Convert bytes to big.Int
-	b := new(big.Int).SetBytes(topic.Bytes())
-
-	// Mask only the lowest 24 bits
-	value := b.Int64() & 0xFFFFFF // 24 bits
-
-	// If sign bit (bit 23) is set, convert to negative
-	if value&0x800000 != 0 {
-		value = value - 0x1000000
-	}
-
-	return int32(value)
 }

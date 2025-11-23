@@ -12,10 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v3poolsrepo"
-	abiassets "github.com/alexkalak/go_market_analyze/services/eventcollectorservice/src/eventcollectorassets"
+	"github.com/alexkalak/go_market_analyze/services/eventcollectorservice/src/eventcollectorservice/eventhandles"
 	"github.com/alexkalak/go_market_analyze/services/merging/src/merger"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -23,16 +21,8 @@ import (
 
 const quietDelay = 150 * time.Millisecond
 
-type v3ExchangeABI struct {
-	ABI        abi.ABI
-	SwapV3Sig  common.Hash
-	MintV3Sig  common.Hash
-	BurnV3Sig  common.Hash
-	FlashV3Sig common.Hash
-}
-
 type RPCEventsCollectorService interface {
-	StartFromBlockV3(ctx context.Context, addresses []common.Address) error
+	StartFromBlock(ctx context.Context, addresses []common.Address) error
 }
 
 type RPCEventsCollectorServiceConfig struct {
@@ -74,22 +64,55 @@ func (d *RPCEventCollectorServiceDependencies) validate() error {
 	return nil
 }
 
-type abiName string
-
-const (
-	_UNISWAP_V3_ABI_NAME     abiName = "uniswap_v3_events"
-	_PANCAKESWAP_V3_ABI_NAME abiName = "pancakeswap_v3_events"
-	_SUSHISWAP_V3_ABI_NAME   abiName = "sushiswap_v3_events"
-
-	_UNISWAP_V2_ABI_Name abiName = "uniswap_v2_events"
-)
-
 type headAndLogsSync struct {
-	mu *sync.Mutex
+	mu sync.Mutex
 	//blocknumber -> blocktimestamp
 	blockTimestamps map[uint64]uint64
 	//blocknumber -> logs
 	pendingLogs map[uint64][]types.Log
+}
+
+func newEventHandler(v3EventHandler eventhandles.V3EventHandler, v2EventHandler eventhandles.V2EventHandler) eventHandler {
+	return eventHandler{
+		v3EventHandler: v3EventHandler,
+		v2EventHandler: v2EventHandler,
+		// sigs:           append(v3EventHandler.AllEventSigs, v2EventHandler.AllEventSigs...),
+		sigs: v2EventHandler.AllEventSigs,
+	}
+
+}
+
+type eventHandler struct {
+	v3EventHandler eventhandles.V3EventHandler
+	v2EventHandler eventhandles.V2EventHandler
+	sigs           []common.Hash
+}
+
+func (h *eventHandler) Handle(lg types.Log, timestamp uint64) (poolEvent, error) {
+	sig := lg.Topics[0]
+
+	poolEv := poolEvent{}
+	if h.v3EventHandler.HasSig(sig) {
+		ev, err := h.v3EventHandler.Handle(lg, int(timestamp))
+		if err != nil {
+			return poolEvent{}, err
+
+		}
+		poolEv.FromV3PoolEvent(ev)
+		return poolEv, nil
+	}
+
+	if h.v2EventHandler.HasSig(sig) {
+		ev, err := h.v2EventHandler.Handle(lg, int(timestamp))
+		if err != nil {
+			return poolEvent{}, err
+
+		}
+		poolEv.FromV2PoolEvent(ev)
+		return poolEv, nil
+	}
+
+	return poolEvent{}, errors.New("Invalid log signature")
 }
 
 type rpcEventsCollector struct {
@@ -97,8 +120,6 @@ type rpcEventsCollector struct {
 	lastCheckedBlockFile *os.File
 
 	config RPCEventsCollectorServiceConfig
-
-	abis map[abiName]v3ExchangeABI
 
 	wsLogsClient   *ethclient.Client
 	httpLogsClient *ethclient.Client
@@ -110,10 +131,11 @@ type rpcEventsCollector struct {
 	lastLogBlockNumber uint64
 	ticker             *time.Ticker
 
-	v3PoolRepo v3poolsrepo.V3PoolDBRepo
+	eventHandler eventHandler
 
 	headsAndLogsData *headAndLogsSync
-	merger           merger.Merger
+
+	merger merger.Merger
 }
 
 func New(config RPCEventsCollectorServiceConfig, dependencies RPCEventCollectorServiceDependencies) (RPCEventsCollectorService, error) {
@@ -124,83 +146,64 @@ func New(config RPCEventsCollectorServiceConfig, dependencies RPCEventCollectorS
 		return nil, err
 	}
 
-	os.MkdirAll("blocks", 0777)
-	var lastCheckedBlock uint64
-	path := fmt.Sprintf("./blocks/%d.txt", config.ChainID)
-	lastCheckedBlockFile, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0777)
-	if err != nil {
-		return nil, err
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
-	}
-	fmt.Println(absPath)
-
-	blockBytes, err := io.ReadAll(lastCheckedBlockFile)
-	if err != nil {
-		return nil, err
-	}
-	lastCheckedBlockInt, err := strconv.Atoi(strings.TrimSpace(string(blockBytes)))
-	if err != nil {
-		return nil, err
-	}
-	lastCheckedBlock = uint64(lastCheckedBlockInt)
-
-	uniswapV3EventsABI, err := abi.JSON(strings.NewReader(abiassets.EventsABIUniswapV3String))
-	if err != nil {
-		return nil, err
-	}
-	pancakeswapV3EventsABI, err := abi.JSON(strings.NewReader(abiassets.EventsABIPancakeswapV3String))
-	if err != nil {
-		return nil, err
-	}
-	sushiswapV3EventsABI, err := abi.JSON(strings.NewReader(abiassets.EventsABISushiswapV3String))
+	lastCheckedBlock, lastCheckedBlockFile, err := loadLastCheckedBlock(config.ChainID)
 	if err != nil {
 		return nil, err
 	}
 
-	uniswapABI := v3ExchangeABI{
-		ABI:        uniswapV3EventsABI,
-		SwapV3Sig:  uniswapV3EventsABI.Events["Swap"].ID,
-		MintV3Sig:  uniswapV3EventsABI.Events["Mint"].ID,
-		BurnV3Sig:  uniswapV3EventsABI.Events["Burn"].ID,
-		FlashV3Sig: uniswapV3EventsABI.Events["Flash"].ID,
+	v3EventHandler, err := eventhandles.NewV3EventHandler()
+	if err != nil {
+		return nil, err
 	}
-	pancakeswapABI := v3ExchangeABI{
-		ABI:       pancakeswapV3EventsABI,
-		SwapV3Sig: pancakeswapV3EventsABI.Events["Swap"].ID,
-		MintV3Sig: pancakeswapV3EventsABI.Events["Mint"].ID,
-		BurnV3Sig: pancakeswapV3EventsABI.Events["Burn"].ID,
-	}
-	sushiswapABI := v3ExchangeABI{
-		ABI:       sushiswapV3EventsABI,
-		SwapV3Sig: sushiswapV3EventsABI.Events["Swap"].ID,
-		MintV3Sig: sushiswapV3EventsABI.Events["Mint"].ID,
-		BurnV3Sig: sushiswapV3EventsABI.Events["Burn"].ID,
+	v2EventHandler, err := eventhandles.NewV2EventHandler()
+	if err != nil {
+		return nil, err
 	}
 
-	fmt.Println(uniswapABI.SwapV3Sig)
-	fmt.Println(uniswapABI.MintV3Sig)
-	fmt.Println(uniswapABI.BurnV3Sig)
-	fmt.Println(uniswapABI.FlashV3Sig)
 	fmt.Println("lastBlockNumber: ", lastCheckedBlock)
 
 	return &rpcEventsCollector{
 		lastCheckedBlock:     lastCheckedBlock,
 		lastCheckedBlockFile: lastCheckedBlockFile,
-		config:               config,
-		averageBlockTime:     14 * time.Second,
-		abis: map[abiName]v3ExchangeABI{
-			_UNISWAP_V3_ABI_NAME:     uniswapABI,
-			_PANCAKESWAP_V3_ABI_NAME: pancakeswapABI,
-			_SUSHISWAP_V3_ABI_NAME:   sushiswapABI,
-		},
+
+		config:           config,
+		averageBlockTime: 14 * time.Second,
 		lastLogTime:      time.Time{},
 		ticker:           time.NewTicker(quietDelay),
 		headsAndLogsData: nil,
-		merger:           dependencies.Merger,
+
+		eventHandler: newEventHandler(v3EventHandler, v2EventHandler),
+		merger:       dependencies.Merger,
 	}, nil
+}
+
+func loadLastCheckedBlock(chainID uint) (uint64, *os.File, error) {
+	os.MkdirAll("blocks", 0777)
+	var lastCheckedBlock uint64
+
+	path := fmt.Sprintf("./blocks/%d.txt", chainID)
+	lastCheckedBlockFile, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0777)
+	if err != nil {
+		return 0, nil, err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return 0, nil, err
+	}
+	fmt.Println(absPath)
+
+	blockBytes, err := io.ReadAll(lastCheckedBlockFile)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	lastCheckedBlockInt, err := strconv.Atoi(strings.TrimSpace(string(blockBytes)))
+	if err != nil {
+		return 0, nil, err
+	}
+	lastCheckedBlock = uint64(lastCheckedBlockInt)
+
+	return lastCheckedBlock, lastCheckedBlockFile, nil
 }
 
 func (s *rpcEventsCollector) configure(ctx context.Context, addresses []common.Address) error {
@@ -211,6 +214,7 @@ func (s *rpcEventsCollector) configure(ctx context.Context, addresses []common.A
 		time.Sleep(3 * time.Second)
 		return s.configure(ctx, addresses)
 	}
+
 	fmt.Println("Requesting http client...")
 	logsHTTPClient, err := ethclient.DialContext(ctx, s.config.MainnetRPCHTTP)
 	if err != nil {
@@ -246,6 +250,7 @@ func (s *rpcEventsCollector) configure(ctx context.Context, addresses []common.A
 	for _, address := range addresses {
 		s.addresses[address] = new(any)
 	}
+
 	s.headsAndLogsData = &headAndLogsSync{
 		blockTimestamps: map[uint64]uint64{},
 		pendingLogs:     map[uint64][]types.Log{},

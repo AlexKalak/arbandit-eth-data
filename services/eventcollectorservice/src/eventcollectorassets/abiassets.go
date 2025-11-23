@@ -10,3 +10,6 @@ var EventsABIPancakeswapV3String string
 
 //go:embed events_abi_sushiswap_v3.json
 var EventsABISushiswapV3String string
+
+//go:embed events_abi_uniswap_v2.json
+var EventsABIUniswapV2String string

@@ -14,6 +14,7 @@ import (
 type V2PairDBRepo interface {
 	DeletePairsByChain(chainID uint) error
 	GetPairs() ([]models.UniswapV2Pair, error)
+	GetPairByIdentificator(identificator models.V2PairIdentificator) (models.UniswapV2Pair, error)
 	GetPairsByChainID(chainID uint) ([]models.UniswapV2Pair, error)
 	GetNonDustyPairsByChainID(chainID uint) ([]models.UniswapV2Pair, error)
 	UpdatePairsIsDusty(pairs []models.UniswapV2Pair) error
@@ -162,6 +163,89 @@ func (r *v2pairDBRepo) GetPairs() ([]models.UniswapV2Pair, error) {
 	}
 
 	return pairs, nil
+}
+
+func (r *v2pairDBRepo) GetPairByIdentificator(identificator models.V2PairIdentificator) (models.UniswapV2Pair, error) {
+	db, err := r.pgDatabase.GetDB()
+	if err != nil {
+		return models.UniswapV2Pair{}, err
+	}
+
+	query := psql.
+		Select(
+			models.UNISWAP_V2_PAIR_ADDRESS,
+			models.UNISWAP_V2_PAIR_CHAINID,
+			models.UNISWAP_V2_PAIR_TOKEN0_ADDRESS,
+			models.UNISWAP_V2_PAIR_TOKEN1_ADDRESS,
+			models.UNISWAP_V2_PAIR_AMOUNT0,
+			models.UNISWAP_V2_PAIR_AMOUNT1,
+			models.UNISWAP_V2_PAIR_FEE_TIER,
+			models.UNISWAP_V2_PAIR_IS_DUSTY,
+			models.UNISWAP_V2_PAIR_BLOCK_NUMBER,
+
+			models.UNISWAP_V2_ZFO_10USD_RATE,
+			models.UNISWAP_V2_NON_ZFO_10USD_RATE,
+		).
+		From(models.UNISWAP_V2_PAIR_TABLE).
+		Where(sq.Eq{models.UNISWAP_V2_PAIR_ADDRESS: identificator.Address, models.UNISWAP_V2_PAIR_CHAINID: identificator.ChainID})
+
+	row := query.
+		RunWith(db).
+		QueryRow()
+
+	var pair models.UniswapV2Pair
+
+	amount0Str := ""
+	amount1Str := ""
+
+	zfo10USDRateStr := ""
+	nonZfo10USDRateStr := ""
+	err = row.Scan(
+		&pair.Address,
+		&pair.ChainID,
+		&pair.Token0,
+		&pair.Token1,
+		&amount0Str,
+		&amount1Str,
+		&pair.FeeTier,
+		&pair.IsDusty,
+		&pair.BlockNumber,
+		&zfo10USDRateStr,
+		&nonZfo10USDRateStr,
+	)
+
+	if err != nil {
+		return models.UniswapV2Pair{}, err
+	}
+
+	amount0 := new(big.Int)
+	_, ok := amount0.SetString(amount0Str, 10)
+	if !ok {
+		amount0 = big.NewInt(0)
+	}
+	amount1 := new(big.Int)
+	_, ok = amount1.SetString(amount1Str, 10)
+	if !ok {
+		amount1 = big.NewInt(0)
+	}
+
+	zfo10USDRate := new(big.Float)
+	_, ok = zfo10USDRate.SetString(zfo10USDRateStr)
+	if !ok {
+		zfo10USDRate = big.NewFloat(0)
+	}
+	nonZfo10USDRate := new(big.Float)
+	_, ok = nonZfo10USDRate.SetString(nonZfo10USDRateStr)
+	if !ok {
+		nonZfo10USDRate = big.NewFloat(0)
+	}
+
+	pair.Zfo10USDRate = zfo10USDRate
+	pair.NonZfo10USDRate = nonZfo10USDRate
+	pair.Amount0 = amount0
+	pair.Amount1 = amount1
+
+	return pair, nil
 }
 
 func (r *v2pairDBRepo) GetPairsByChainID(chainID uint) ([]models.UniswapV2Pair, error) {

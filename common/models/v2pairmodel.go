@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/big"
 )
@@ -53,6 +54,15 @@ func (p *UniswapV2Pair) GetIdentificator() V2PairIdentificator {
 func (p *UniswapV2Pair) GetLiquidity() *big.Int {
 	return new(big.Int).Mul(p.Amount0, p.Amount1)
 
+}
+
+func (p *UniswapV2Pair) GetJSON() ([]byte, error) {
+	return json.Marshal(p)
+}
+
+func (p *UniswapV2Pair) FillFromJSON(jsonBytes []byte) error {
+	err := json.Unmarshal(jsonBytes, &p)
+	return err
 }
 
 func (p V2PairIdentificator) String() string {

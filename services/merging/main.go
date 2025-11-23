@@ -88,11 +88,11 @@ func main() {
 
 	// validatePools(merger)
 
-	// imitatePoolSwap(merger)
+	imitatePoolSwap(merger)
 
 	// mergePairs(merger)
 	// mergePairsData(merger)
-	validatePairs(merger)
+	// validatePairs(merger)
 }
 
 func mergePools(merger merger.Merger) {
@@ -133,7 +133,7 @@ func validatePools(merger merger.Merger) {
 }
 
 func imitatePoolSwap(merger merger.Merger) {
-	poolAddress := "0xc07044d4b947e7c5701f1922db048c6b47799b84"
+	poolAddress := "0xa5f43b0ebaefbed5b1f1bfc809af15254ea1e9c4"
 	var chainID uint = 1
 
 	err := merger.ImitateSwapForPool(models.V3PoolIdentificator{

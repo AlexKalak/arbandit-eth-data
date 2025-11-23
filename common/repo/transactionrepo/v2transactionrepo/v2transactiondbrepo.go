@@ -1,4 +1,4 @@
-package v3transactionrepo
+package v2transactionrepo
 
 import (
 	"errors"
@@ -8,21 +8,21 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/alexkalak/go_market_analyze/common/models"
 	"github.com/alexkalak/go_market_analyze/common/periphery/pgdatabase"
-	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v3transactionrepo/v3transactiondberrors"
+	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v2transactionrepo/v2transactiondberrors"
 )
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
-type V3TransactionDBRepo interface {
-	CreateV3Swap(tx *models.V3Swap) error
-	GetV3SwapsByChainID(chainID uint) ([]models.V3Swap, error)
+type V2TransactionDBRepo interface {
+	CreateV2Swap(tx *models.V2Swap) error
+	GetV2SwapsByChainID(chainID uint) ([]models.V2Swap, error)
 }
 
-type V3TransactionDBRepoDependencies struct {
+type V2TransactionDBRepoDependencies struct {
 	Database *pgdatabase.PgDatabase
 }
 
-func (d *V3TransactionDBRepoDependencies) validate() error {
+func (d *V2TransactionDBRepoDependencies) validate() error {
 	if d.Database == nil {
 		return errors.New("token repo dependencies database cannot be nil")
 	}
@@ -34,7 +34,7 @@ type transactionDBRepo struct {
 	pgDatabase *pgdatabase.PgDatabase
 }
 
-func NewDBRepo(dependencies V3TransactionDBRepoDependencies) (V3TransactionDBRepo, error) {
+func NewDBRepo(dependencies V2TransactionDBRepoDependencies) (V2TransactionDBRepo, error) {
 	if err := dependencies.validate(); err != nil {
 		return nil, err
 	}
@@ -44,27 +44,27 @@ func NewDBRepo(dependencies V3TransactionDBRepoDependencies) (V3TransactionDBRep
 	}, nil
 }
 
-func (r *transactionDBRepo) CreateV3Swap(swap *models.V3Swap) error {
+func (r *transactionDBRepo) CreateV2Swap(swap *models.V2Swap) error {
 	db, err := r.pgDatabase.GetDB()
 	if err != nil {
 		return err
 	}
 
 	query := psql.
-		Insert(models.V3_SWAP_TABLE).
+		Insert(models.V2_SWAP_TABLE).
 		Columns(
-			models.V3_SWAP_CHAIN_ID,
-			models.V3_SWAP_POOL_ADDRESS,
-			models.V3_SWAP_TX_HASH,
-			models.V3_SWAP_TX_TIMESTAMP,
-			models.V3_SWAP_BLOCK_NUMBER,
-			models.V3_SWAP_AMOUNT0,
-			models.V3_SWAP_AMOUNT1,
-			models.V3_SWAP_ARCHIVE_TOKEN0_USD_PRICE,
-			models.V3_SWAP_ARCHIVE_TOKEN1_USD_PRICE,
+			models.V2_SWAP_CHAIN_ID,
+			models.V2_SWAP_PAIR_ADDRESS,
+			models.V2_SWAP_TX_HASH,
+			models.V2_SWAP_TX_TIMESTAMP,
+			models.V2_SWAP_BLOCK_NUMBER,
+			models.V2_SWAP_AMOUNT0,
+			models.V2_SWAP_AMOUNT1,
+			models.V2_SWAP_ARCHIVE_TOKEN0_USD_PRICE,
+			models.V2_SWAP_ARCHIVE_TOKEN1_USD_PRICE,
 		).Values(
 		swap.ChainID,
-		swap.PoolAddress,
+		swap.PairAddress,
 		swap.TxHash,
 		swap.TxTimestamp,
 		swap.BlockNumber,
@@ -77,13 +77,13 @@ func (r *transactionDBRepo) CreateV3Swap(swap *models.V3Swap) error {
 	_, err = query.RunWith(db).Exec()
 	if err != nil {
 		fmt.Println(err)
-		return v3transactiondberrors.ErrUnableToCreateTransaction
+		return v2transactiondberrors.ErrUnableToCreateTransaction
 	}
 
 	return nil
 }
 
-func (r *transactionDBRepo) GetV3SwapsByChainID(chainID uint) ([]models.V3Swap, error) {
+func (r *transactionDBRepo) GetV2SwapsByChainID(chainID uint) ([]models.V2Swap, error) {
 	db, err := r.pgDatabase.GetDB()
 	if err != nil {
 		return nil, err
@@ -91,28 +91,28 @@ func (r *transactionDBRepo) GetV3SwapsByChainID(chainID uint) ([]models.V3Swap, 
 
 	query := psql.
 		Select(
-			models.V3_SWAP_ID,
-			models.V3_SWAP_CHAIN_ID,
-			models.V3_SWAP_POOL_ADDRESS,
-			models.V3_SWAP_TX_HASH,
-			models.V3_SWAP_TX_TIMESTAMP,
-			models.V3_SWAP_BLOCK_NUMBER,
-			models.V3_SWAP_AMOUNT0,
-			models.V3_SWAP_AMOUNT1,
-			models.V3_SWAP_ARCHIVE_TOKEN0_USD_PRICE,
-			models.V3_SWAP_ARCHIVE_TOKEN1_USD_PRICE,
+			models.V2_SWAP_ID,
+			models.V2_SWAP_CHAIN_ID,
+			models.V2_SWAP_PAIR_ADDRESS,
+			models.V2_SWAP_TX_HASH,
+			models.V2_SWAP_TX_TIMESTAMP,
+			models.V2_SWAP_BLOCK_NUMBER,
+			models.V2_SWAP_AMOUNT0,
+			models.V2_SWAP_AMOUNT1,
+			models.V2_SWAP_ARCHIVE_TOKEN0_USD_PRICE,
+			models.V2_SWAP_ARCHIVE_TOKEN1_USD_PRICE,
 		).
-		From(models.V3_SWAP_TABLE).
-		Where(sq.Eq{models.V3_SWAP_CHAIN_ID: chainID}).OrderBy(models.V3_SWAP_ID)
+		From(models.V2_SWAP_TABLE).
+		Where(sq.Eq{models.V2_SWAP_CHAIN_ID: chainID}).OrderBy(models.V2_SWAP_ID)
 
 	rows, err := query.RunWith(db).Query()
 	if err != nil {
 		return nil, err
 	}
 
-	res := []models.V3Swap{}
+	res := []models.V2Swap{}
 	for rows.Next() {
-		var swap models.V3Swap
+		var swap models.V2Swap
 
 		amount0Str := ""
 		amount1Str := ""
@@ -122,7 +122,7 @@ func (r *transactionDBRepo) GetV3SwapsByChainID(chainID uint) ([]models.V3Swap, 
 		err := rows.Scan(
 			&swap.ID,
 			&swap.ChainID,
-			&swap.PoolAddress,
+			&swap.PairAddress,
 			&swap.TxHash,
 			&swap.TxTimestamp,
 			&swap.BlockNumber,
@@ -151,6 +151,7 @@ func (r *transactionDBRepo) GetV3SwapsByChainID(chainID uint) ([]models.V3Swap, 
 		if !ok {
 			continue
 		}
+
 		swap.Amount0 = amount0
 		swap.Amount1 = amount1
 		swap.ArchiveToken0USDPrice = archiveToken0USDPrice

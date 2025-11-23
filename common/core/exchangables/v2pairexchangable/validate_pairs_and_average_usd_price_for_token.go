@@ -294,7 +294,7 @@ func checkPairForDefinedTokens(
 
 var bTen = big.NewInt(10)
 
-func GetRateForPairReal(pair *models.UniswapV2Pair, tokenAddress string, tokenOut int, tokenIn int) (*big.Float, error) {
+func GetRateForPairReal(pair *models.UniswapV2Pair, tokenAddress string, tokenOutDecimals int, tokenInDecimals int) (*big.Float, error) {
 	ex := ExchangableUniswapV2PairRaw{
 		Pair: pair,
 	}
@@ -303,16 +303,16 @@ func GetRateForPairReal(pair *models.UniswapV2Pair, tokenAddress string, tokenOu
 	rate := ex.GetRate(true)
 
 	if pair.Token0 == tokenAddress {
-		dtDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenOut)), nil)
-		tokenDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenIn)), nil)
+		dtDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenOutDecimals)), nil)
+		tokenDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenInDecimals)), nil)
 
 		rate.Mul(rate, new(big.Float).SetInt(tokenDecimalsPow))
 		rate.Quo(rate, new(big.Float).SetInt(dtDecimalsPow))
 
 		return rate, nil
 	} else if pair.Token1 == tokenAddress {
-		dtDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenOut)), nil)
-		tokenDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenIn)), nil)
+		dtDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenOutDecimals)), nil)
+		tokenDecimalsPow := new(big.Int).Exp(bTen, big.NewInt(int64(tokenInDecimals)), nil)
 
 		rate.Mul(rate, new(big.Float).SetInt(dtDecimalsPow))
 		rate.Quo(rate, new(big.Float).SetInt(tokenDecimalsPow))
