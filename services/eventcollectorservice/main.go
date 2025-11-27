@@ -82,8 +82,8 @@ func main() {
 		panic(err)
 	}
 	rpcClient, err := rpcclient.NewRpcClient(rpcclient.RpcClientConfig{
-		EthMainnetWs:   env.ETH_MAINNET_RPC_WS,
-		EthMainnetHttp: env.ETH_MAINNET_RPC_HTTP,
+		WsURL:   env.ETH_MAINNET_RPC_WS,
+		HttpURL: env.ETH_MAINNET_RPC_HTTP,
 	})
 	if err != nil {
 		panic(err)

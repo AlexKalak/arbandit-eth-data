@@ -13,6 +13,9 @@ import (
 //go:embed mergeassets/tokens.uniswap.org.json
 var uniswapTokens string
 
+//go:embed mergeassets/pancakeswap.tokens.json
+var pancakeswapTokens string
+
 type tokenFromUniswapOrg struct {
 	Name     string `json:"name"`
 	Address  string `json:"address"`
@@ -22,14 +25,35 @@ type tokenFromUniswapOrg struct {
 	LogoURI  string `json:"logoURI"`
 }
 
+func getTokensByChainID(chainID uint) ([]tokenFromUniswapOrg, error) {
+	tokens := []tokenFromUniswapOrg{}
+	if chainID == 56 {
+		tokensStruct := struct {
+			Tokens []tokenFromUniswapOrg `json:"tokens"`
+		}{}
+		err := json.NewDecoder(strings.NewReader(pancakeswapTokens)).Decode(&tokensStruct)
+		if err != nil {
+			return nil, err
+		}
+
+		tokens = tokensStruct.Tokens
+	} else if chainID == 1 {
+		err := json.NewDecoder(strings.NewReader(pancakeswapTokens)).Decode(&tokens)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return tokens, nil
+}
+
 func (m *merger) MergeTokens(chainID uint) error {
 	db, err := m.database.GetDB()
 	if err != nil {
 		return err
 	}
 
-	tokensRaw := []tokenFromUniswapOrg{}
-	err = json.NewDecoder(strings.NewReader(uniswapTokens)).Decode(&tokensRaw)
+	tokensRaw, err := getTokensByChainID(chainID)
 	if err != nil {
 		return err
 	}

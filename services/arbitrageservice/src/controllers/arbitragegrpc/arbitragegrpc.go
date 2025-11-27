@@ -78,8 +78,8 @@ func (s *arbitrageGRPCServer) Start() error {
 	return nil
 }
 
-func (s *arbitrageGRPCServer) GetArbsOnChain(context.Context, *pb.ArbsOnChainRequest) (*pb.ArbsOnChainResponse, error) {
-	arbs, err := s.arbitrageService.FindAllArbs()
+func (s *arbitrageGRPCServer) GetArbsOnChain(ctx context.Context, req *pb.ArbsOnChainRequest) (*pb.ArbsOnChainResponse, error) {
+	arbs, err := s.arbitrageService.FindAllArbs(uint(req.ChainId))
 	if err != nil {
 		return nil, err
 	}

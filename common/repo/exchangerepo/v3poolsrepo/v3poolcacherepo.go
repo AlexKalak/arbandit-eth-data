@@ -95,8 +95,8 @@ func (r *v3poolCacheRepo) GetNonDustyPools(chainID uint) ([]models.UniswapV3Pool
 	if err != nil {
 		return nil, err
 	}
-
 	pools := make([]models.UniswapV3Pool, 0, len(poolsMap))
+
 	for _, poolStr := range poolsMap {
 		pool := models.UniswapV3Pool{}
 		err = pool.FillFromJSON([]byte(poolStr))

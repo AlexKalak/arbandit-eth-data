@@ -6,8 +6,10 @@ import (
 
 	"github.com/alexkalak/go_market_analyze/common/helpers/envhelper"
 	"github.com/alexkalak/go_market_analyze/common/periphery/pgdatabase"
+	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v2pairsrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v3poolsrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/tokenrepo"
+	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v2transactionrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v3transactionrepo"
 	"github.com/alexkalak/go_market_analyze/services/arbitrageservice/src/arbitrageservice"
 	"github.com/alexkalak/go_market_analyze/services/arbitrageservice/src/controllers/arbitragegrpc"
@@ -39,6 +41,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	tokenCacheRepo, err := tokenrepo.NewCacheRepo(context.Background(), tokenrepo.TokenCacheRepoConfig{
+		RedisServer: env.REDIS_SERVER,
+	})
+	if err != nil {
+		panic(err)
+	}
 
 	v3PoolDBRepo, err := v3poolsrepo.NewDBRepo(v3poolsrepo.V3PoolDBRepoDependencies{
 		Database: pgDB,
@@ -54,7 +62,26 @@ func main() {
 		panic(err)
 	}
 
+	v2PairDBRepo, err := v2pairsrepo.NewDBRepo(v2pairsrepo.V2PairDBRepoDependencies{
+		Database: pgDB,
+	})
+	if err != nil {
+		panic(err)
+	}
+	v2PairCacheRepo, err := v2pairsrepo.NewCacheRepo(context.Background(), v2pairsrepo.V2PairCacheRepoConfig{
+		RedisServer: env.REDIS_SERVER,
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	v3TransactionDBRepo, err := v3transactionrepo.NewDBRepo(v3transactionrepo.V3TransactionDBRepoDependencies{
+		Database: pgDB,
+	})
+	if err != nil {
+		panic(err)
+	}
+	v2TransactionDBRepo, err := v2transactionrepo.NewDBRepo(v2transactionrepo.V2TransactionDBRepoDependencies{
 		Database: pgDB,
 	})
 	if err != nil {
@@ -62,10 +89,16 @@ func main() {
 	}
 
 	arbitrageServiceDependencies := arbitrageservice.ArbitrageServiceDependencies{
-		TokenRepo:           tokenRepo,
-		V3PoolCacheRepo:     v3PoolCacheRepo,
-		V3PoolDBRepo:        v3PoolDBRepo,
-		V3TransactionDBRepo: v3TransactionDBRepo,
+		TokenRepo:      tokenRepo,
+		TokenCacheRepo: tokenCacheRepo,
+
+		V2PairDBRepo:    v2PairDBRepo,
+		V2PairCacheRepo: v2PairCacheRepo,
+		V3PoolCacheRepo: v3PoolCacheRepo,
+		V3PoolDBRepo:    v3PoolDBRepo,
+
+		V2TransactionsDBRepo: v2TransactionDBRepo,
+		V3TransactionDBRepo:  v3TransactionDBRepo,
 	}
 
 	var chainID uint = 1
@@ -99,6 +132,16 @@ func main() {
 	switch *command {
 	case "oldArbs":
 		err := arbitrageService.FindOldArbs()
+		if err != nil {
+			panic(err)
+		}
+	case "findArbs":
+		_, err := arbitrageService.FindAllArbs(1)
+		if err != nil {
+			panic(err)
+		}
+	case "startSearching":
+		err := arbitrageService.Start(context.Background())
 		if err != nil {
 			panic(err)
 		}

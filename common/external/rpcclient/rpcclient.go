@@ -32,15 +32,15 @@ type RpcClient interface {
 }
 
 type RpcClientConfig struct {
-	EthMainnetWs   string
-	EthMainnetHttp string
+	WsURL   string
+	HttpURL string
 }
 
 type rpcClient struct {
 	config RpcClientConfig
 	//chainID -> client
-	clients            map[uint]*ethclient.Client
-	multicallAddresses map[uint]common.Address
+	client           *ethclient.Client
+	multicallAddress common.Address
 
 	v3PoolDataABI abi.ABI
 	v2PairDataABI abi.ABI
@@ -48,7 +48,7 @@ type rpcClient struct {
 }
 
 func NewRpcClient(config RpcClientConfig) (RpcClient, error) {
-	ethClient, err := ethclient.Dial(config.EthMainnetWs)
+	ethClient, err := ethclient.Dial(config.WsURL)
 	if err != nil {
 		return nil, err
 	}
@@ -67,16 +67,12 @@ func NewRpcClient(config RpcClientConfig) (RpcClient, error) {
 	}
 
 	return &rpcClient{
-		clients: map[uint]*ethclient.Client{
-			1: ethClient,
-		},
-		multicallAddresses: map[uint]common.Address{
-			1: common.HexToAddress("0xca11bde05977b3631167028862be2a173976ca11"),
-		},
-		config:        config,
-		v3PoolDataABI: v3PoolDataABI,
-		v2PairDataABI: v2PairDataABI,
-		multicallABI:  multicallABI,
+		client:           ethClient,
+		multicallAddress: common.HexToAddress("0xca11bde05977b3631167028862be2a173976ca11"),
+		config:           config,
+		v3PoolDataABI:    v3PoolDataABI,
+		v2PairDataABI:    v2PairDataABI,
+		multicallABI:     multicallABI,
 	}, nil
 }
 
@@ -86,16 +82,6 @@ type call struct {
 }
 
 func (c *rpcClient) GetPoolsData(ctx context.Context, pools []models.UniswapV3Pool, chainID uint, blockNumber *big.Int) ([]models.UniswapV3Pool, error) {
-	client, ok := c.clients[chainID]
-	if !ok {
-		return nil, fmt.Errorf("client for chain %d not found", chainID)
-	}
-
-	multicallAddress, ok := c.multicallAddresses[chainID]
-	if !ok {
-		return nil, fmt.Errorf("multicall address for chain %d not found", chainID)
-	}
-
 	chunkSize := 10
 
 	res := struct {
@@ -154,7 +140,7 @@ upperLoop:
 					calls = append(calls, call{poolAddress, data})
 				}
 
-				returnBytes, err := c.Multicall(ctx, calls, blockNumber, client, multicallAddress)
+				returnBytes, err := c.Multicall(ctx, calls, blockNumber, c.client, c.multicallAddress)
 				if err != nil {
 					fmt.Println("Error calling rpc multicall", err)
 					if repeatedTimes < 2 {
@@ -259,16 +245,6 @@ func (c *rpcClient) handleGetPoolDataReturnBytes(pools []models.UniswapV3Pool, r
 }
 
 func (c *rpcClient) GetPairsData(ctx context.Context, pairs []models.UniswapV2Pair, chainID uint, blockNumber *big.Int) ([]models.UniswapV2Pair, error) {
-	client, ok := c.clients[chainID]
-	if !ok {
-		return nil, fmt.Errorf("client for chain %d not found", chainID)
-	}
-
-	multicallAddress, ok := c.multicallAddresses[chainID]
-	if !ok {
-		return nil, fmt.Errorf("multicall address for chain %d not found", chainID)
-	}
-
 	chunkSize := 10
 
 	res := struct {
@@ -317,7 +293,7 @@ upperLoop:
 					calls = append(calls, call{pairAddress, data})
 				}
 
-				returnBytes, err := c.Multicall(ctx, calls, blockNumber, client, multicallAddress)
+				returnBytes, err := c.Multicall(ctx, calls, blockNumber, c.client, c.multicallAddress)
 				if err != nil {
 					fmt.Println("Error calling rpc multicall", err)
 					if repeatedTimes < 2 {
@@ -330,12 +306,12 @@ upperLoop:
 					return
 				}
 
-				updatedPools, err := c.handleGetPairDataReturnBytes(slice, returnBytes)
+				updatedPairs, err := c.handleGetPairDataReturnBytes(slice, returnBytes)
 				if err != nil {
 					return
 				}
 				res.mu.Lock()
-				res.pairs = append(res.pairs, updatedPools...)
+				res.pairs = append(res.pairs, updatedPairs...)
 				res.mu.Unlock()
 			}
 

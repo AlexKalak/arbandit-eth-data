@@ -1,6 +1,7 @@
 package exchangegraph
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -14,7 +15,7 @@ import (
 
 type ExchangesGraph interface {
 	FindAllArbs(maxDepth int, initAmount *big.Int) ([]Arbitrage, error)
-	FindArbs(startTokenIndex int, maxDepth int, initAmount *big.Int) ([]int, bool)
+	FindArbs(startTokenIndex int, maxDepth int, initAmount *big.Int) ([]Arbitrage, error)
 	GetTokenByIndex(index int) (*models.Token, error)
 	GetTokenIndexByIdentificator(identificator models.TokenIdentificator) (int, error)
 	UpdateExchangable(exchangableIdentifier string, exchangable exchangables.Exchangable) error
@@ -27,6 +28,7 @@ type edge struct {
 }
 
 type Arbitrage struct {
+	ResultUSD *big.Float
 	Hops      []int
 	UsedEdges []*edge
 	Amounts   []*big.Int
@@ -36,16 +38,13 @@ func (a *Arbitrage) CountRealAmounts() error {
 	currentAmount := a.Amounts[0]
 	realAmounts := []*big.Int{new(big.Int).Set(currentAmount)}
 	var err error
-	fmt.Println(a.Hops[0])
 	for _, edge := range a.UsedEdges {
 		currentAmount, err = edge.Exchangable.ImitateSwap(currentAmount, edge.Zfo)
 		if err != nil {
 			return err
 		}
-		fmt.Println(currentAmount)
 		realAmounts = append(realAmounts, new(big.Int).Set(currentAmount))
 	}
-	fmt.Println(a.Hops[len(a.Hops)-1])
 
 	a.Amounts = realAmounts
 
@@ -144,6 +143,11 @@ func (g *exchangesGraph) FindAllArbs(maxDepth int, initAmount *big.Int) ([]Arbit
 
 	chunks := 16
 
+	arbsSynced := struct {
+		mu   sync.Mutex
+		arbs []Arbitrage
+	}{}
+
 	wg := sync.WaitGroup{}
 	for chunk := range chunks {
 		start := tokensLen * chunk / chunks
@@ -151,75 +155,30 @@ func (g *exchangesGraph) FindAllArbs(maxDepth int, initAmount *big.Int) ([]Arbit
 		wg.Add(1)
 		go func(start, end int) {
 			for i := start; i < end; i++ {
-				g.FindArbs(i, maxDepth, initAmount)
+				arbitrages, err := g.FindArbs(i, maxDepth, initAmount)
+				if err != nil {
+					continue
+				}
+				if len(arbitrages) == 0 {
+					continue
+				}
+
+				arbsSynced.mu.Lock()
+				arbsSynced.arbs = append(arbsSynced.arbs, arbitrages...)
+				arbsSynced.mu.Unlock()
 			}
 			wg.Done()
 		}(start, end)
 	}
 	wg.Wait()
 
-	uniqueArbsResp := []Arbitrage{}
-	uniqueArbs := []struct {
-		len   int
-		elems map[int]int
-	}{}
-
-	for _, arb := range g.arbitrages {
-		currentArb := struct {
-			len   int
-			elems map[int]int
-		}{
-			len:   len(arb.Hops),
-			elems: map[int]int{},
-		}
-
-		for _, hop := range arb.Hops {
-			currentArb.elems[hop] = 1
-		}
-
-		found := false
-	uniqueArbsLoop:
-		for _, existingArb := range uniqueArbs {
-			if existingArb.len != currentArb.len {
-				continue
-			}
-
-			for hop, _ := range currentArb.elems {
-				_, ok := existingArb.elems[hop]
-				if !ok {
-					continue uniqueArbsLoop
-				}
-			}
-
-			found = true
-			break
-		}
-		if found {
-			continue
-		}
-
-		uniqueArbs = append(uniqueArbs, currentArb)
-		uniqueArbsResp = append(uniqueArbsResp, arb)
-
-		for i, hop := range arb.Hops {
-			token := g.tokens[hop]
-
-			if i == 0 {
-				fmt.Printf(" -> %s - %s \n", arb.Amounts[i], token.Symbol)
-			} else {
-				edge := arb.UsedEdges[i-1]
-				fmt.Printf(" -> %s %s - %s \n", arb.Amounts[i], token.Symbol, edge.Exchangable.Address())
-			}
-		}
-		fmt.Println("")
-
-	}
-
 	fmt.Println("Total time elapsed: ", time.Since(tall).Milliseconds(), "ms")
-	return uniqueArbsResp, nil
+	return arbsSynced.arbs, nil
 }
 
-func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount *big.Int) ([]int, bool) {
+func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount *big.Int) ([]Arbitrage, error) {
+	arbitrages := []Arbitrage{}
+
 	token := g.tokens[startTokenIndex]
 
 	tokenAmountForOneUSD := new(big.Float).Quo(big.NewFloat(1), token.USDPrice)
@@ -228,7 +187,7 @@ func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount 
 	amount := new(big.Float).Mul(new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(token.Decimals)), nil)), tokenAmountNeeded)
 	amountInt, _ := amount.Int(nil)
 	if amountInt == nil {
-		return nil, false
+		return nil, errors.New("Unable to convert usd amount to tokenAmount")
 	}
 
 	stack := []Path{{
@@ -287,7 +246,6 @@ func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount 
 
 			if next == startTokenIndex {
 				if new(big.Int).Sub(newAmount, new(big.Int).Div(newAmount, big.NewInt(100))).Cmp(amountInt) > 0 {
-					g.mu.Lock()
 					totalCount++
 
 					arb := Arbitrage{
@@ -295,14 +253,38 @@ func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount 
 						UsedEdges: usedEdgesUpdated,
 						Amounts:   updatedAmounts,
 					}
+
 					err := arb.CountRealAmounts()
 					if err != nil {
 						continue
 					}
 
-					g.arbitrages = append(g.arbitrages, arb)
+					am := arb.Amounts[len(arb.Amounts)-1]
 
-					g.mu.Unlock()
+					if new(big.Int).Sub(am, new(big.Int).Div(am, big.NewInt(100))).Cmp(amountInt) <= 0 {
+						continue
+					}
+
+					tokenAmount := new(big.Int).Sub(am, amountInt)
+					tokenAmountReal := new(big.Float)
+
+					usdPriceOfTokenOut := new(big.Float)
+					if e.Zfo {
+						tokenAmountReal.Set(e.Exchangable.GetToken1().GetRealAmount(tokenAmount))
+						usdPriceOfTokenOut = e.Exchangable.GetToken1().USDPrice
+					} else {
+						tokenAmountReal.Set(e.Exchangable.GetToken0().GetRealAmount(tokenAmount))
+						usdPriceOfTokenOut = e.Exchangable.GetToken0().USDPrice
+					}
+
+					resultUSD := new(big.Float).Mul(tokenAmountReal, usdPriceOfTokenOut)
+
+					if resultUSD.Cmp(big.NewFloat(0.15)) < 0 {
+						continue
+					}
+
+					arb.ResultUSD = resultUSD
+					arbitrages = append(arbitrages, arb)
 				}
 
 				continue
@@ -318,7 +300,33 @@ func (g *exchangesGraph) FindArbs(startTokenIndex int, maxDepth int, initAmount 
 		}
 	}
 
-	return nil, false
+	slices.SortFunc(arbitrages, func(a1, a2 Arbitrage) int {
+		return -1 * new(big.Int).Sub(a1.Amounts[len(a1.Amounts)-1], a2.Amounts[len(a2.Amounts)-1]).Sign()
+	})
+
+	// fmt.Println("Len arbs: ", len(arbitrages))
+	// if len(arbitrages) > 0 {
+	// 	fmt.Println("best: ", arbitrages[0])
+	// 	fmt.Println("worst: ", arbitrages[len(arbitrages)-1])
+	// }
+
+	usedExchangables := map[string]any{}
+	uniqueArbs := []Arbitrage{}
+
+arbLoop:
+	for _, arb := range arbitrages {
+		for _, edge := range arb.UsedEdges {
+			if _, ok := usedExchangables[edge.Exchangable.Address()]; ok {
+				continue arbLoop
+			}
+		}
+		for _, edge := range arb.UsedEdges {
+			usedExchangables[edge.Exchangable.Address()] = new(any)
+		}
+		uniqueArbs = append(uniqueArbs, arb)
+	}
+
+	return uniqueArbs, nil
 }
 
 func (g *exchangesGraph) GetTokenByIndex(index int) (*models.Token, error) {

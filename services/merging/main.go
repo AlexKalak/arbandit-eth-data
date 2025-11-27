@@ -15,6 +15,8 @@ import (
 	"github.com/alexkalak/go_market_analyze/services/merging/src/merger"
 )
 
+var chainID uint = 56
+
 func main() {
 	env, err := envhelper.GetEnv()
 	if err != nil {
@@ -61,8 +63,8 @@ func main() {
 	}
 
 	rpcClient, err := rpcclient.NewRpcClient(rpcclient.RpcClientConfig{
-		EthMainnetWs:   env.ETH_MAINNET_RPC_WS,
-		EthMainnetHttp: env.ETH_MAINNET_RPC_HTTP,
+		WsURL:   env.ETH_MAINNET_RPC_WS,
+		HttpURL: env.ETH_MAINNET_RPC_HTTP,
 	})
 	if err != nil {
 		panic(err)
@@ -82,22 +84,29 @@ func main() {
 		panic(err)
 	}
 
+	// mergeTokens(merger)
 	// mergePools(merger)
 	// mergePoolsTicks(merger)
 	// mergePoolsData(merger)
 
 	// validatePools(merger)
 
-	imitatePoolSwap(merger)
+	// imitatePoolSwap(merger)
 
 	// mergePairs(merger)
-	// mergePairsData(merger)
+	mergePairsData(merger)
 	// validatePairs(merger)
 }
 
-func mergePools(merger merger.Merger) {
-	var chainID uint = 1
+func mergeTokens(merger merger.Merger) {
 
+	err := merger.MergeTokens(chainID)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func mergePools(merger merger.Merger) {
 	err := merger.MergePools(chainID)
 	if err != nil {
 		panic(err)
@@ -105,8 +114,6 @@ func mergePools(merger merger.Merger) {
 }
 
 func mergePoolsTicks(merger merger.Merger) {
-	var chainID uint = 1
-
 	err := merger.MergePoolsTicks(context.Background(), chainID)
 	if err != nil {
 		panic(err)
@@ -114,7 +121,6 @@ func mergePoolsTicks(merger merger.Merger) {
 }
 
 func mergePoolsData(merger merger.Merger) {
-	var chainID uint = 1
 	blockNumber := big.NewInt(int64(23821196))
 
 	err := merger.MergePoolsData(context.Background(), chainID, blockNumber)
@@ -124,8 +130,6 @@ func mergePoolsData(merger merger.Merger) {
 }
 
 func validatePools(merger merger.Merger) {
-	var chainID uint = 1
-
 	err := merger.ValidateV3PoolsAndComputeAverageUSDPrice(chainID)
 	if err != nil {
 		panic(err)
@@ -134,8 +138,6 @@ func validatePools(merger merger.Merger) {
 
 func imitatePoolSwap(merger merger.Merger) {
 	poolAddress := "0xa5f43b0ebaefbed5b1f1bfc809af15254ea1e9c4"
-	var chainID uint = 1
-
 	err := merger.ImitateSwapForPool(models.V3PoolIdentificator{
 		Address: poolAddress,
 		ChainID: chainID,
@@ -147,8 +149,6 @@ func imitatePoolSwap(merger merger.Merger) {
 }
 
 func mergePairs(merger merger.Merger) {
-	var chainID uint = 1
-
 	err := merger.MergePairs(chainID)
 	if err != nil {
 		panic(err)
@@ -157,7 +157,6 @@ func mergePairs(merger merger.Merger) {
 }
 
 func mergePairsData(merger merger.Merger) {
-	var chainID uint = 1
 	blockNumber := big.NewInt(int64(23821196))
 
 	err := merger.MergePairsData(context.Background(), chainID, blockNumber)
@@ -167,8 +166,6 @@ func mergePairsData(merger merger.Merger) {
 }
 
 func validatePairs(merger merger.Merger) {
-	var chainID uint = 1
-
 	err := merger.ValidateV2PairsAndComputeAverageUSDPrice(chainID)
 	if err != nil {
 		panic(err)

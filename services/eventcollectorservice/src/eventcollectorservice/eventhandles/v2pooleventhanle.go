@@ -149,8 +149,8 @@ func (e *UniswapV2SwapEvent) GetMetaData() EventMetaData {
 
 type UniswapV2SyncEvent struct {
 	MetaData EventMetaData
-	Reserve0 *big.Int `json:"reserve1"`
-	Reserve1 *big.Int `json:"reserve0"`
+	Reserve0 *big.Int `json:"reserve0"`
+	Reserve1 *big.Int `json:"reserve1"`
 }
 
 func (e *UniswapV2SyncEvent) ParseFrom(abiForEvent V2ExchangeABI, lg types.Log, timestamp int) error {
@@ -167,7 +167,7 @@ func (e *UniswapV2SyncEvent) ParseFrom(abiForEvent V2ExchangeABI, lg types.Log, 
 	if !ok {
 		return eventcollectorerrors.ErrUnableToParseLog
 	}
-	reserve1, ok := out[0].(*big.Int)
+	reserve1, ok := out[1].(*big.Int)
 	if !ok {
 		return eventcollectorerrors.ErrUnableToParseLog
 	}

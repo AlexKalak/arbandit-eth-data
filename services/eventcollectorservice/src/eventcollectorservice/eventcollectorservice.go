@@ -76,8 +76,8 @@ func newEventHandler(v3EventHandler eventhandles.V3EventHandler, v2EventHandler 
 	return eventHandler{
 		v3EventHandler: v3EventHandler,
 		v2EventHandler: v2EventHandler,
-		// sigs:           append(v3EventHandler.AllEventSigs, v2EventHandler.AllEventSigs...),
-		sigs: v2EventHandler.AllEventSigs,
+		sigs:           append(v3EventHandler.AllEventSigs, v2EventHandler.AllEventSigs...),
+		// sigs:           v2EventHandler.AllEventSigs,
 	}
 
 }

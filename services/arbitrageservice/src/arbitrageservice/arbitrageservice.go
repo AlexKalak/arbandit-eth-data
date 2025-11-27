@@ -9,36 +9,51 @@ import (
 	"time"
 
 	"github.com/alexkalak/go_market_analyze/common/core/exchangables"
+	"github.com/alexkalak/go_market_analyze/common/core/exchangables/v2pairexchangable"
 	"github.com/alexkalak/go_market_analyze/common/core/exchangables/v3poolexchangable"
 	"github.com/alexkalak/go_market_analyze/common/core/exchangegraph"
 	"github.com/alexkalak/go_market_analyze/common/models"
 	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v2pairsrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/exchangerepo/v3poolsrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/tokenrepo"
+	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v2transactionrepo"
 	"github.com/alexkalak/go_market_analyze/common/repo/transactionrepo/v3transactionrepo"
 )
 
 type ArbitrageService interface {
 	FindOldArbs() error
-	FindAllArbs() ([]Arbitrage, error)
+	FindAllArbs(chainID uint) ([]Arbitrage, error)
 	Start(ctx context.Context) error
 }
 
 type arbitrageService struct {
-	chainID              uint
-	exchangeGraph        exchangegraph.ExchangesGraph
-	v3PoolDBRepo         v3poolsrepo.V3PoolDBRepo
-	v3PoolCacheRepo      v3poolsrepo.V3PoolCacheRepo
+	chainID       uint
+	exchangeGraph exchangegraph.ExchangesGraph
+
+	v3PoolDBRepo    v3poolsrepo.V3PoolDBRepo
+	v3PoolCacheRepo v3poolsrepo.V3PoolCacheRepo
+	v2PairDBRepo    v2pairsrepo.V2PairDBRepo
+	v2PairCacheRepo v2pairsrepo.V2PairCacheRepo
+
 	v3TransactionsDBRepo v3transactionrepo.V3TransactionDBRepo
-	tokenDBRepo          tokenrepo.TokenRepo
+	v2TransactionsDBRepo v2transactionrepo.V2TransactionDBRepo
+
+	tokenDBRepo    tokenrepo.TokenRepo
+	tokenCacheRepo tokenrepo.TokenCacheRepo
 }
 
 type ArbitrageServiceDependencies struct {
-	TokenRepo           tokenrepo.TokenRepo
-	V3PoolCacheRepo     v3poolsrepo.V3PoolCacheRepo
-	V2PairRepo          v2pairsrepo.V2PairDBRepo
-	V3PoolDBRepo        v3poolsrepo.V3PoolDBRepo
-	V3TransactionDBRepo v3transactionrepo.V3TransactionDBRepo
+	TokenRepo      tokenrepo.TokenRepo
+	TokenCacheRepo tokenrepo.TokenCacheRepo
+
+	V3PoolCacheRepo v3poolsrepo.V3PoolCacheRepo
+	V3PoolDBRepo    v3poolsrepo.V3PoolDBRepo
+
+	V2PairDBRepo    v2pairsrepo.V2PairDBRepo
+	V2PairCacheRepo v2pairsrepo.V2PairCacheRepo
+
+	V3TransactionDBRepo  v3transactionrepo.V3TransactionDBRepo
+	V2TransactionsDBRepo v2transactionrepo.V2TransactionDBRepo
 }
 
 func (d *ArbitrageServiceDependencies) validate() error {
@@ -46,19 +61,28 @@ func (d *ArbitrageServiceDependencies) validate() error {
 		return errors.New("arbitrage service dependencies token repo cannot be nil")
 
 	}
+	if d.TokenCacheRepo == nil {
+		return errors.New("arbitrage service dependencies token cache repo cannot be nil")
+
+	}
+
 	if d.V3PoolCacheRepo == nil {
 		return errors.New("arbitrage service dependencies token repo cannot be nil")
 	}
 	if d.V3PoolDBRepo == nil {
 		return errors.New("arbitrage service dependencies V3PoolDBRepo cannot be nil")
 	}
+
+	if d.V2PairCacheRepo == nil {
+		return errors.New("arbitrage service dependencies V2PairCacheRepo cannot be nil")
+	}
 	if d.V3TransactionDBRepo == nil {
 		return errors.New("arbitrage service dependencies V3TransactionRepo cannot be nil")
 	}
-	// if d.V2PairRepo== nil {
-	// 	return errors.New("arbitrage service dependencies token repo cannot be nil")
-	//
-	// }
+	if d.V2TransactionsDBRepo == nil {
+		return errors.New("arbitrage service dependencies V2TransactionDBRepo cannot be nil")
+	}
+
 	return nil
 }
 
@@ -69,10 +93,14 @@ func New(chainID uint, dependencies ArbitrageServiceDependencies) (ArbitrageServ
 
 	service := &arbitrageService{
 		chainID:              chainID,
-		v3TransactionsDBRepo: dependencies.V3TransactionDBRepo,
 		v3PoolDBRepo:         dependencies.V3PoolDBRepo,
 		v3PoolCacheRepo:      dependencies.V3PoolCacheRepo,
+		v2PairDBRepo:         dependencies.V2PairDBRepo,
+		v2PairCacheRepo:      dependencies.V2PairCacheRepo,
+		v3TransactionsDBRepo: dependencies.V3TransactionDBRepo,
+		v2TransactionsDBRepo: dependencies.V2TransactionsDBRepo,
 		tokenDBRepo:          dependencies.TokenRepo,
+		tokenCacheRepo:       dependencies.TokenCacheRepo,
 	}
 	err := service.updateGraph()
 	if err != nil {
@@ -91,27 +119,29 @@ type oldArb struct {
 	tokens     []string
 }
 
-type SwapChainNode struct {
-	SwapID       int
-	NextSwapNode *SwapChainNode
-	PrevSwapNode *SwapChainNode
+type TradesChainNode struct {
+	TradeID       string
+	NextTradeNode *TradesChainNode
+	PrevTradeNode *TradesChainNode
 }
 
 func (s *arbitrageService) Start(ctx context.Context) error {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(4 * time.Second)
 	for {
 		select {
 		case <-ctx.Done():
 			return errors.New("arbitrage service ctx done")
 		case <-ticker.C:
+			fmt.Println("-------SEARCHING-------")
 			s.updateGraph()
-			s.exchangeGraph.FindAllArbs(3, big.NewInt(int64(s.chainID)))
+			s.FindAllArbs(s.chainID)
+			fmt.Println("-------END SEARCHING-------\n\n")
 		}
 	}
 }
 
 func (s *arbitrageService) updateGraph() error {
-	tokens, err := s.tokenDBRepo.GetTokens()
+	tokens, err := s.tokenDBRepo.GetTokensByChainID(s.chainID)
 	if err != nil {
 		panic(err)
 	}
@@ -120,7 +150,11 @@ func (s *arbitrageService) updateGraph() error {
 		tokenIDs[token.GetIdentificator()] = token
 	}
 
-	pools, err := s.v3PoolCacheRepo.GetNonDustyPools(s.chainID)
+	pools, err := s.v3PoolDBRepo.GetNotDustyPoolsByChainID(s.chainID)
+	if err != nil {
+		panic(err)
+	}
+	pairs, err := s.v2PairDBRepo.GetNonDustyPairsByChainID(s.chainID)
 	if err != nil {
 		panic(err)
 	}
@@ -148,6 +182,27 @@ func (s *arbitrageService) updateGraph() error {
 
 		exchangablesArray = append(exchangablesArray, &v3Exchangable)
 	}
+	for _, pair := range pairs {
+		token0, ok := tokenIDs[models.TokenIdentificator{Address: pair.Token0, ChainID: s.chainID}]
+		if !ok {
+			continue
+		}
+		token1, ok := tokenIDs[models.TokenIdentificator{Address: pair.Token1, ChainID: s.chainID}]
+		if !ok {
+			continue
+		}
+
+		v2Exchangable, err := v2pairexchangable.NewV2ExchangablePair(
+			&pair,
+			token0,
+			token1,
+		)
+		if err != nil {
+			continue
+		}
+
+		exchangablesArray = append(exchangablesArray, &v2Exchangable)
+	}
 
 	fmt.Println("Len exchangables: ", len(exchangablesArray))
 
@@ -174,7 +229,7 @@ type Arbitrage struct {
 	Path []ArbitragePathUnit
 }
 
-func (s *arbitrageService) FindAllArbs() ([]Arbitrage, error) {
+func (s *arbitrageService) FindAllArbs(chainID uint) ([]Arbitrage, error) {
 	err := s.updateGraph()
 	if err != nil {
 		return nil, err
@@ -183,6 +238,63 @@ func (s *arbitrageService) FindAllArbs() ([]Arbitrage, error) {
 	arbs, err := s.exchangeGraph.FindAllArbs(3, big.NewInt(10))
 	if err != nil {
 		return nil, err
+	}
+	slices.SortFunc(arbs, func(a1, a2 exchangegraph.Arbitrage) int {
+		return new(big.Float).Sub(a2.ResultUSD, a1.ResultUSD).Sign()
+	})
+	fmt.Println("Len arbs: ", len(arbs))
+	if len(arbs) > 0 {
+		fmt.Println("best: ", arbs[0])
+		fmt.Println("worst: ", arbs[len(arbs)-1])
+	}
+
+	usedExchangables := map[string]any{}
+	uniqueArbs := map[string]exchangegraph.Arbitrage{}
+
+arbLoop:
+	for _, arb := range arbs {
+		for _, edge := range arb.UsedEdges {
+			if _, ok := usedExchangables[edge.Exchangable.Address()]; ok {
+				continue arbLoop
+			}
+		}
+		for _, edge := range arb.UsedEdges {
+			usedExchangables[edge.Exchangable.Address()] = new(any)
+		}
+
+		outAmount := arb.Amounts[len(arb.Amounts)-1]
+
+		if prevArb, ok := uniqueArbs[arb.UsedEdges[0].Exchangable.Address()]; ok {
+			prevAmount := prevArb.Amounts[len(prevArb.Amounts)-1]
+			if prevAmount.Cmp(outAmount) >= 0 {
+				continue
+			}
+		}
+		uniqueArbs[arb.UsedEdges[0].Exchangable.Address()] = arb
+	}
+
+	for _, arb := range uniqueArbs {
+		if len(arb.UsedEdges) == 0 {
+			continue
+		}
+
+		for i, hop := range arb.Hops {
+			token, err := s.exchangeGraph.GetTokenByIndex(hop)
+			if err != nil {
+				fmt.Println("=====FAILED====")
+				break
+			}
+
+			if i == 0 {
+				fmt.Printf(" -> %s - %s \n", arb.Amounts[i], token.Symbol)
+			} else {
+				edge := arb.UsedEdges[i-1]
+				fmt.Printf(" -> %s %s - %s \n", arb.Amounts[i], token.Symbol, edge.Exchangable.Address())
+			}
+		}
+		fmt.Printf(" RESULT USD: %s$ \n", arb.ResultUSD.Text('f', -1))
+		fmt.Println("")
+
 	}
 
 	res := []Arbitrage{}
@@ -217,196 +329,4 @@ func (s *arbitrageService) FindAllArbs() ([]Arbitrage, error) {
 	}
 
 	return res, nil
-}
-
-func (s *arbitrageService) FindOldArbs() error {
-	swaps, err := s.v3TransactionsDBRepo.GetV3SwapsByChainID(s.chainID)
-	if err != nil {
-		return err
-	}
-	fmt.Println("Swaps: ", len(swaps))
-
-	transactionsMap := map[string][]models.V3Swap{}
-	for _, swap := range swaps {
-		if arr, ok := transactionsMap[swap.TxHash]; ok {
-			arr = append(arr, swap)
-			transactionsMap[swap.TxHash] = arr
-		} else {
-			transactionsMap[swap.TxHash] = []models.V3Swap{swap}
-		}
-	}
-
-	pools, err := s.v3PoolDBRepo.GetPoolsByChainID(s.chainID)
-	if err != nil {
-		return err
-	}
-	fmt.Println("Pools: ", len(pools))
-
-	poolsMap := map[string]models.UniswapV3Pool{}
-	for _, pool := range pools {
-		poolsMap[pool.Address] = pool
-	}
-
-	arbs := []oldArb{}
-
-transactionLoop:
-	for txHash, swaps := range transactionsMap {
-		swapsMap := map[int]*models.V3Swap{}
-		amountsOut := map[int]*big.Int{}
-
-		for _, swap := range swaps {
-			swapsMap[swap.ID] = &swap
-			amountOut := swap.Amount1
-			if swap.Amount0.Sign() < 0 {
-				amountOut = swap.Amount0
-			}
-
-			amountsOut[swap.ID] = amountOut
-		}
-
-		nodesMap := map[int]*SwapChainNode{}
-
-		var randomSwapNode *SwapChainNode
-		for _, swap := range swaps {
-			amountIn := swap.Amount1
-			if swap.Amount0.Sign() > 0 {
-				amountIn = swap.Amount0
-			}
-
-			for outID, amountOut := range amountsOut {
-				if amountIn.CmpAbs(amountOut) == 0 {
-					swapNode, ok := nodesMap[outID]
-					if !ok {
-						swapNode = &SwapChainNode{
-							SwapID:       outID,
-							NextSwapNode: nil,
-							PrevSwapNode: nil,
-						}
-					}
-
-					nextSwapNode, ok := nodesMap[swap.ID]
-					if !ok {
-						nextSwapNode = &SwapChainNode{
-							SwapID:       swap.ID,
-							NextSwapNode: nil,
-						}
-					}
-					nextSwapNode.PrevSwapNode = swapNode
-					swapNode.NextSwapNode = nextSwapNode
-					nodesMap[outID] = swapNode
-					nodesMap[swap.ID] = nextSwapNode
-
-					randomSwapNode = swapNode
-					break
-				}
-			}
-		}
-
-		if randomSwapNode == nil || (randomSwapNode.PrevSwapNode == nil && randomSwapNode.NextSwapNode == nil) {
-			continue
-		}
-
-		lastSwapNode := randomSwapNode
-		for lastSwapNode.PrevSwapNode != nil {
-			lastSwapNode = lastSwapNode.PrevSwapNode
-		}
-
-		count := 1
-		firstSwapNode := lastSwapNode
-		for firstSwapNode.NextSwapNode != nil {
-			firstSwapNode = firstSwapNode.NextSwapNode
-			count++
-		}
-
-		if count >= 3 {
-			arb := oldArb{
-				txHash:     txHash,
-				pathString: "",
-				tokens:     []string{},
-				amountIn:   new(big.Int),
-				amountOut:  new(big.Int),
-			}
-
-			firstSwapNode := lastSwapNode
-			swap, ok := swapsMap[firstSwapNode.SwapID]
-			if !ok {
-				continue
-			}
-
-			arb.pathString += fmt.Sprint(swap.PoolAddress, "->")
-			pool, ok := poolsMap[swap.PoolAddress]
-			if !ok {
-				continue transactionLoop
-			}
-
-			zfo := swap.Amount0.Cmp(big.NewInt(0)) > 0
-
-			tokenIn := ""
-			tokenOut := ""
-			if zfo {
-				tokenIn = pool.Token0
-				tokenOut = pool.Token1
-				arb.amountIn.Abs(swap.Amount0)
-				arb.amountOut.Abs(swap.Amount1)
-			} else {
-				tokenIn = pool.Token1
-				tokenOut = pool.Token0
-				arb.amountIn.Abs(swap.Amount1)
-				arb.amountOut.Abs(swap.Amount0)
-			}
-
-			arb.tokens = append(arb.tokens, tokenIn)
-			arb.tokens = append(arb.tokens, tokenOut)
-
-			for firstSwapNode.NextSwapNode != nil {
-				firstSwapNode = firstSwapNode.NextSwapNode
-
-				swap, ok := swapsMap[firstSwapNode.SwapID]
-				arb.t = int(swap.TxTimestamp)
-				if !ok {
-					continue
-				}
-				arb.pathString += fmt.Sprint(swap.PoolAddress, "->")
-
-				pool, ok := poolsMap[swap.PoolAddress]
-				if !ok {
-					continue transactionLoop
-				}
-
-				zfo := swap.Amount0.Cmp(big.NewInt(0)) > 0
-
-				tokenOut := ""
-				if zfo {
-					tokenOut = pool.Token1
-					arb.amountIn.Abs(swap.Amount0)
-					arb.amountOut.Abs(swap.Amount1)
-				} else {
-					tokenOut = pool.Token0
-					arb.amountIn.Abs(swap.Amount1)
-					arb.amountOut.Abs(swap.Amount0)
-				}
-
-				arb.tokens = append(arb.tokens, tokenOut)
-
-			}
-			if arb.tokens[0] == arb.tokens[len(arb.tokens)-1] {
-				arbs = append(arbs, arb)
-			}
-
-		}
-
-	}
-
-	slices.SortFunc(arbs, func(x oldArb, y oldArb) int {
-		return x.t - y.t
-	})
-	for _, arb := range arbs {
-		fmt.Println(time.Unix(int64(arb.t), 0))
-		fmt.Println(arb.pathString)
-		fmt.Println(arb.txHash)
-		fmt.Println("=============")
-
-	}
-
-	return nil
 }

@@ -55,23 +55,23 @@ func (s *rpcEventsCollector) StartFromBlock(ctx context.Context, addresses []com
 		return s.StartFromBlock(ctx, addresses)
 	}
 
-	// if currentHead.Number.Uint64()-s.lastCheckedBlock > 30 {
-	// err := s.mergeFromBlock(ctx, s.config.ChainID, currentHead.Number)
-	// if err != nil {
-	// 	return err
-	// }
-	// s.setLastCheckedBlock(currentHead.Number.Uint64())
-	// } else {
-	// 	lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, big.NewInt(int64(s.lastCheckedBlock+1)), currentHead.Number)
-	// 	if err != nil {
-	// 		if strings.Contains(err.Error(), "invalid params") {
-	// 			time.Sleep(3 * time.Second)
-	// 			s.StartFromBlock(ctx, addresses)
-	// 		}
-	// 		return err
-	// 	}
-	// 	s.setLastCheckedBlock(lastSentBlock)
-	// }
+	if currentHead.Number.Uint64()-s.lastCheckedBlock > 30 {
+		err := s.mergeFromBlock(ctx, s.config.ChainID, currentHead.Number)
+		if err != nil {
+			return err
+		}
+		s.setLastCheckedBlock(currentHead.Number.Uint64())
+	} else {
+		lastSentBlock, err := s.produceHistoryEventsFromBlock(ctx, big.NewInt(int64(s.lastCheckedBlock+1)), currentHead.Number)
+		if err != nil {
+			if strings.Contains(err.Error(), "invalid params") {
+				time.Sleep(3 * time.Second)
+				s.StartFromBlock(ctx, addresses)
+			}
+			return err
+		}
+		s.setLastCheckedBlock(lastSentBlock)
+	}
 
 	fmt.Println("Got head: ", currentHead)
 	fmt.Println("END PRELOADING, PRODUCING NEW MESSAGES")
@@ -93,13 +93,13 @@ func (s *rpcEventsCollector) mergeFromBlock(ctx context.Context, chainID uint, b
 	}
 	fmt.Println("Merging pools done.")
 
-	fmt.Println("Merging pools ticks...")
-	err = s.merger.MergePoolsTicks(ctx, chainID)
-	if err != nil {
-		fmt.Println("Merging pools ticks error: ", err)
-		return err
-	}
-	fmt.Println("Merging pools ticks done.")
+	// fmt.Println("Merging pools ticks...")
+	// err = s.merger.MergePoolsTicks(ctx, chainID)
+	// if err != nil {
+	// 	fmt.Println("Merging pools ticks error: ", err)
+	// 	return err
+	// }
+	// fmt.Println("Merging pools ticks done.")
 
 	fmt.Println("Merging pools data...")
 	err = s.merger.MergePoolsData(ctx, chainID, blockNumber)

@@ -21,6 +21,10 @@ type TokenIdentificator struct {
 	ChainID uint
 }
 
+func (t *TokenIdentificator) String() string {
+	return fmt.Sprintf("%d_%s", t.ChainID, t.Address)
+}
+
 type Token struct {
 	mu       sync.Mutex
 	Name     string

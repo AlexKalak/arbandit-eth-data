@@ -76,7 +76,7 @@ type poolUpdater struct {
 }
 
 func newPoolUpdater(chainID uint, tokensMapForCache, tokensMapForDB map[models.TokenIdentificator]*models.Token, updatedTokensSet map[string]any, dependencies poolUpdaterDependencies) (poolUpdater, error) {
-	pools, err := dependencies.V3PoolDBRepo.GetPoolsByChainID(chainID)
+	pools, err := dependencies.V3PoolDBRepo.GetNotDustyPoolsByChainID(chainID)
 	if err != nil {
 		return poolUpdater{}, err
 	}

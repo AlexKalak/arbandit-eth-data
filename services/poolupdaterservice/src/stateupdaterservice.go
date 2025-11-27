@@ -185,6 +185,8 @@ func New(config StateUpdaterServiceConfig, dependencies StateUpdaterServiceDepen
 		return nil, err
 	}
 
+	service.tokenCacheRepo.SetTokens(config.ChainID, tokens)
+
 	service.poolUpdater = poolUpdater
 	service.pairUpdater = pairUpdater
 
@@ -253,6 +255,7 @@ func (s *stateUpdater) handleMessage(m *kafka.Message, poolDBChannel, pairDBChan
 }
 
 func (s *stateUpdater) handleBlockOver() {
+	fmt.Println("tokensupdated: ", len(s.currentBlockUpdatedTokens))
 	for tokenAddress := range s.currentBlockUpdatedTokens {
 		tokenIdentificator := models.TokenIdentificator{
 			ChainID: s.config.ChainID,

@@ -39,7 +39,7 @@ func UpdateRateFor10USD(pair *models.UniswapV2Pair, token0 *models.Token, token1
 		return errors.New("invalid usd price")
 	}
 
-	usdAmount := big.NewInt(10)
+	usdAmount := big.NewInt(5)
 
 	amount0Init := token0.FromUSD(usdAmount)
 	amount1Init := token1.FromUSD(usdAmount)

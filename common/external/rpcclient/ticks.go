@@ -14,16 +14,6 @@ import (
 )
 
 func (c *rpcClient) GetPoolsTicks(ctx context.Context, pools []models.UniswapV3Pool, chainID uint, blockNumber *big.Int) ([]models.UniswapV3Pool, error) {
-	client, ok := c.clients[chainID]
-	if !ok {
-		return nil, fmt.Errorf("client for chain %d not found", chainID)
-	}
-
-	multicallAddress, ok := c.multicallAddresses[chainID]
-	if !ok {
-		return nil, fmt.Errorf("multicall address for chain %d not found", chainID)
-	}
-
 	chunkSize := 3
 
 	res := struct {
@@ -75,7 +65,7 @@ upperLoop:
 
 				}
 
-				returnBytes, err := c.Multicall(ctx, calls, blockNumber, client, multicallAddress)
+				returnBytes, err := c.Multicall(ctx, calls, blockNumber, c.client, c.multicallAddress)
 				if err != nil {
 					fmt.Println("Error calling rpc multicall", err)
 					if repeatedTimes < 2 {

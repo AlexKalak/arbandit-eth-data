@@ -103,7 +103,8 @@ func (r *transactionDBRepo) GetV2SwapsByChainID(chainID uint) ([]models.V2Swap, 
 			models.V2_SWAP_ARCHIVE_TOKEN1_USD_PRICE,
 		).
 		From(models.V2_SWAP_TABLE).
-		Where(sq.Eq{models.V2_SWAP_CHAIN_ID: chainID}).OrderBy(models.V2_SWAP_ID)
+		Where(sq.Eq{models.V2_SWAP_CHAIN_ID: chainID}).
+		OrderBy(fmt.Sprint(models.V2_SWAP_ID, " DESC"))
 
 	rows, err := query.RunWith(db).Query()
 	if err != nil {
@@ -111,7 +112,12 @@ func (r *transactionDBRepo) GetV2SwapsByChainID(chainID uint) ([]models.V2Swap, 
 	}
 
 	res := []models.V2Swap{}
+	i := 0
 	for rows.Next() {
+		i++
+		if i > 1000 {
+			break
+		}
 		var swap models.V2Swap
 
 		amount0Str := ""

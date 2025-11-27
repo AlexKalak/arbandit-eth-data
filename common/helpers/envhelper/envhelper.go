@@ -9,18 +9,20 @@ import (
 )
 
 type Environment struct {
-	BYBIT_API_KEY        string
-	BYBIT_API_SECRET     string
-	SUBGRAPH_API_TOKEN   string
-	POSTGRES_HOST        string
-	POSTGRES_PORT        string
-	POSTGRES_USER        string
-	POSTGRES_PASSWORD    string
-	POSTGRES_DB_NAME     string
-	POSTGRES_SSL_MODE    string
+	BYBIT_API_KEY      string
+	BYBIT_API_SECRET   string
+	SUBGRAPH_API_TOKEN string
+	POSTGRES_HOST      string
+	POSTGRES_PORT      string
+	POSTGRES_USER      string
+	POSTGRES_PASSWORD  string
+	POSTGRES_DB_NAME   string
+	POSTGRES_SSL_MODE  string
+
 	ETH_MAINNET_RPC_WS   string
 	ETH_MAINNET_RPC_HTTP string
-	BSC_MAINNET_RPC      string
+	BSC_MAINNET_RPC_WS   string
+	BSC_MAINNET_RPC_HTTP string
 
 	KAFKA_SERVER                string
 	KAFKA_UPDATE_V3_POOLS_TOPIC string
@@ -59,7 +61,8 @@ const _POSTGRES_SSL_MODE = "POSTGRES_SSL_MODE"
 const _ETH_MAINNET_RPC_WS = "ETH_MAINNET_RPC_WS"
 const _ETH_MAINNET_RPC_HTTP = "ETH_MAINNET_RPC_HTTP"
 
-const _BSC_MAINNET_RPC = "BSC_MAINNET_RPC"
+const _BSC_MAINNET_RPC_WS = "BSC_MAINNET_RPC_WS"
+const _BSC_MAINNET_RPC_HTTP = "BSC_MAINNET_RPC_HTTP"
 
 const _KAFKA_SERVER = "KAFKA_SERVER"
 const _KAFKA_UPDATE_V3_POOLS_TOPIC = "KAFKA_UPDATE_V3_POOLS_TOPIC"
@@ -123,9 +126,14 @@ func load() error {
 	if env.ETH_MAINNET_RPC_HTTP == "" {
 		return buildLoadingEnvError(_ETH_MAINNET_RPC_HTTP)
 	}
-	env.BSC_MAINNET_RPC = os.Getenv(_BSC_MAINNET_RPC)
-	if env.BSC_MAINNET_RPC == "" {
-		return buildLoadingEnvError(_BSC_MAINNET_RPC)
+
+	env.BSC_MAINNET_RPC_WS = os.Getenv(_BSC_MAINNET_RPC_WS)
+	if env.BSC_MAINNET_RPC_WS == "" {
+		return buildLoadingEnvError(_BSC_MAINNET_RPC_WS)
+	}
+	env.BSC_MAINNET_RPC_HTTP = os.Getenv(_BSC_MAINNET_RPC_HTTP)
+	if env.BSC_MAINNET_RPC_HTTP == "" {
+		return buildLoadingEnvError(_BSC_MAINNET_RPC_HTTP)
 	}
 
 	env.KAFKA_SERVER = os.Getenv(_KAFKA_SERVER)
